@@ -18,11 +18,6 @@ public partial class Boss : Node3D, ICombatant
 
     [Export] public string DisplayName { get; set; } = "The Wipebringer";
 
-    /// Seconds past a telegraph's visible end before the server resolves it. See
-    /// BeginCast for why this exists at all; the real value also accounts for the
-    /// worst connected round trip.
-    [Export] public float MinimumResolveGrace { get; set; } = 0.12f;
-
     /// How long after a wipe or a kill before the encounter restarts, so you can
     /// iterate without relaunching.
     [Export] public float ResetSeconds { get; set; } = 8f;
@@ -39,10 +34,6 @@ public partial class Boss : Node3D, ICombatant
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
     [Export] public int PhaseIndex { get; set; }
     [Export] public string StatusPayload { get => _status.Encoded; set => _status.Decode(value); }
-
-    /// Fires on every peer the moment a telegraph appears, so the HUD can draw a
-    /// cast bar without knowing anything about the encounter.
-    [Signal] public delegate void CastStartedEventHandler(string label, double startTime, double endTime, Color color);
 
     // --- ICombatant ---
     public string CombatName => DisplayName;
@@ -62,11 +53,9 @@ public partial class Boss : Node3D, ICombatant
 
     private Label3D _label;
 
-    // --- Server-only encounter state. None of it is replicated. ---
-    private Ability _casting;
-    private TelegraphArea _area;
-    private double _castEndAt;
-    private double _resolveAt;
+    // --- Server-only encounter state. None of it is replicated. Note there is no
+    // "currently casting" field any more: casts live in CombatDirector, which is
+    // what lets more than one be in flight at a time. ---
     private double _nextCastAt;
     private double _resetAt;
     private readonly Dictionary<Ability, double> _readyAt = new();
@@ -113,13 +102,9 @@ public partial class Boss : Node3D, ICombatant
 
         UpdatePhase();
 
-        // A cast in flight owns the loop until its deadline passes.
-        if (_casting is not null)
-        {
-            if (now >= _resolveAt) Resolve(now);
-            return;
-        }
-
+        // The director owns casts in flight. Asking it, rather than tracking a flag
+        // here, is what makes overlapping mechanics a data change instead of a rewrite.
+        if (CombatDirector.Instance.IsCasting(this)) return;
         if (now < _nextCastAt) return;
 
         // Nothing to fight if nobody is alive to fight it. Without this the boss
@@ -189,103 +174,21 @@ public partial class Boss : Node3D, ICombatant
     }
 
     // ---------------------------------------------------------------------
-    // Warn
+    // Warn -- handed to the director, which telegraphs and resolves it
     // ---------------------------------------------------------------------
 
     private void BeginCast(Ability ability, double now)
     {
-        _casting = ability;
-        _area = ability.BuildArea(GlobalPosition, AimPointFor(ability));
-        _castEndAt = now + ability.CastSeconds;
         _readyAt[ability] = now + ability.Cooldown;
 
-        // ---- THE TRAILING EDGE ----
-        //
-        // Resolving the instant the telegraph visually ends produces the single
-        // most infuriating bug in the genre: "I dodged that and still died."
-        //
-        // With one-way latency L, a client only starts drawing at L. Its circle
-        // finishes at L + duration, and a player who steps out right then has that
-        // move reach us at L + duration + L. Resolving at `duration` would judge
-        // them on a position from L ago -- before they moved.
-        //
-        // So we wait one full round trip past the visual end. The damage lands
-        // about a tenth of a second after the circle fills, which nobody perceives,
-        // and the same wait also guarantees every client actually finished seeing
-        // the warning before it bit them. One number, both problems.
-        double grace = Mathf.Max(MinimumResolveGrace, NetClock.Instance.WorstPeerRtt);
-        _resolveAt = _castEndAt + grace;
+        // Recovery is booked from the cast's end, not its start, so a long wind-up
+        // does not eat the breathing room after it.
+        _nextCastAt = now + ability.CastSeconds + (CurrentPhase?.RecoverySeconds ?? 2.0);
 
-        // castStart and castEnd are ABSOLUTE times on the shared clock, never
-        // "starting now". That is what lets a client whose packet arrived late draw
-        // an already-partly-filled telegraph that still finishes on time, instead of
-        // a full-length one that finishes late.
-        Rpc(MethodName.ShowTelegraph, _area.ToDictionary(), ability.DisplayName,
-            now, _castEndAt, ability.TelegraphColor);
+        CombatDirector.Instance.Begin(this, ability, AimPointFor(ability));
 
         GD.Print($"[boss] cast {ability.DisplayName} ({ability.Shape}) " +
-                 $"at {Flat(_area.Center)} r={_area.Radius} " +
-                 $"telegraph={ability.CastSeconds:0.00}s grace={grace:0.000}s");
-    }
-
-    /// <summary>
-    /// Draw the warning. Runs on every peer including the server, which simply
-    /// ignores it when headless -- the visual has no authority over anything.
-    /// </summary>
-    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
-    private void ShowTelegraph(Godot.Collections.Dictionary areaData, string label,
-                               double castStart, double castEnd, Color color)
-    {
-        TelegraphArea area = TelegraphArea.FromDictionary(areaData);
-        TelegraphView.Spawn(this, area, castStart, castEnd, color);
-        EmitSignal(SignalName.CastStarted, label, castStart, castEnd, color);
-    }
-
-    // ---------------------------------------------------------------------
-    // Resolve
-    // ---------------------------------------------------------------------
-
-    private void Resolve(double now)
-    {
-        Ability ability = _casting;
-        _casting = null;
-        _nextCastAt = now + (CurrentPhase?.RecoverySeconds ?? 2.0);
-
-        List<ICombatant> candidates = Combatants.Living(this, this, ability.Affects);
-        var targets = new List<ICombatant>();
-
-        GD.Print($"[resolve] {ability.DisplayName} at {Flat(_area.Center)}");
-
-        foreach (ICombatant candidate in candidates)
-        {
-            // CombatPosition is the validated position, never the raw claim.
-            // Field() is negative inside and positive outside, in metres -- so this
-            // line is also how you check the shader against the maths: stand on the
-            // edge and watch the number cross zero.
-            float field = _area.Field(candidate.CombatPosition);
-            bool hit = field <= 0f;
-            if (hit) targets.Add(candidate);
-
-            GD.Print($"[resolve]   {candidate.CombatName} at {Flat(candidate.CombatPosition)} " +
-                     $"field={field:+0.00;-0.00}m -> {(hit ? "HIT" : "safe")}");
-        }
-
-        var context = new EffectContext
-        {
-            AbilityName = ability.DisplayName,
-            Caster = this,
-            Area = _area,
-            Targets = targets,
-            Candidates = candidates,
-            Now = now,
-        };
-
-        foreach (AbilityEffect effect in ability.Effects)
-        {
-            if (effect is null) continue;
-            GD.Print($"[resolve]   {effect.Describe(context)}");
-            effect.Resolve(context);
-        }
+                 $"telegraph={ability.CastSeconds:0.00}s");
     }
 
     // ---------------------------------------------------------------------
@@ -300,7 +203,6 @@ public partial class Boss : Node3D, ICombatant
 
         if (IsAlive) return;
 
-        _casting = null;
         _resetAt = Now + ResetSeconds;
         GD.Print($"[boss] {DisplayName} defeated. Resetting in {ResetSeconds}s.");
     }
@@ -317,7 +219,6 @@ public partial class Boss : Node3D, ICombatant
         _status.Clear();
         PhaseIndex = 0;
         _readyAt.Clear();
-        _casting = null;
         _nextCastAt = Now + 2.0;
         GD.Print($"[boss] {DisplayName} reset.");
     }

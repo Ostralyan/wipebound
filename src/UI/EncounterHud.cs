@@ -27,6 +27,8 @@ public partial class EncounterHud : Control
 
     public override void _Ready()
     {
+        CombatDirector.Instance.CastStarted += OnCastStarted;
+
         _bossName = GetNode<Label>("Encounter/BossName");
         _bossHealth = GetNode<ProgressBar>("Encounter/BossHealth");
         _castLabel = GetNode<Label>("Encounter/CastLabel");
@@ -48,11 +50,14 @@ public partial class EncounterHud : Control
         if (GetTree().GetFirstNodeInGroup(Boss.GroupName) is not Boss boss) return;
 
         _boss = boss;
-        _boss.CastStarted += OnCastStarted;
     }
 
-    private void OnCastStarted(string label, double startTime, double endTime, Color color)
+    private void OnCastStarted(int casterTeam, string casterName, string label,
+                               double startTime, double endTime, Color color)
     {
+        // The boss frame shows boss casts. A player's own cast bar is their business.
+        if ((Team)casterTeam != Team.Enemies) return;
+
         _castLabel.Text = label;
         _castLabel.Modulate = color;
         _castBar.Modulate = color;

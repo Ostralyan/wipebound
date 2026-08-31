@@ -1,5 +1,6 @@
 using Godot;
 using Wipebound.Combat;
+using Wipebound.Combat.Commands;
 using Wipebound.Net;
 
 namespace Wipebound.Player;
@@ -32,10 +33,9 @@ public partial class Hero : CharacterBody3D, ICombatant
     [Export] public float RespawnSeconds = 6f;
     [Export] public float ManaRegenPerSecond = 7f;
 
-    [ExportGroup("Attack (placeholder for the real ability system)")]
-    [Export] public float ZapCooldown = 1.0f;
-    [Export] public float ZapRange = 16f;
-    [Export] public float ZapDamage = 14f;
+    /// Left empty, PlayerKit fills this in. Assign abilities here to override.
+    [ExportGroup("Abilities")]
+    [Export] public Godot.Collections.Array<Ability> Kit { get; set; } = new();
 
     // --- Replicated by MoveSync. Authority: the owning client. ---
     [Export] public Vector3 NetPosition { get; set; }
@@ -123,8 +123,10 @@ public partial class Hero : CharacterBody3D, ICombatant
     private bool _useNavigation;
     private int _navProbeFrames;
 
-    // Server-only. Never replicated, never accepted from a client.
-    private double _zapReadyAt;
+    // Server-only. Never replicated, never accepted from a client. These are the
+    // real cooldowns; the client's copies below are display state.
+    private double[] _serverReadyAt = System.Array.Empty<double>();
+    private double[] _clientReadyAt = System.Array.Empty<double>();
     private double _respawnAt;
 
     /// While the server itself is moving this hero -- a knockback, a respawn --
@@ -154,6 +156,10 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         AddToGroup(GroupName);
         AddToGroup(Combatants.GroupName);
+
+        if (Kit.Count == 0) Kit = PlayerKit.Build();
+        _serverReadyAt = new double[Kit.Count];
+        _clientReadyAt = new double[Kit.Count];
 
         _agent = GetNode<NavigationAgent3D>("NavAgent");
         _label = GetNode<Label3D>("NameLabel");
@@ -480,71 +486,80 @@ public partial class Hero : CharacterBody3D, ICombatant
             GetViewport().SetInputAsHandled();
         }
 
-        if (@event is InputEventKey { Pressed: true, Echo: false, Keycode: Key.Q }
+        if (@event is InputEventKey { Pressed: true, Echo: false } key
+            && TryAbilitySlot(key.Keycode, out int slot)
             && RtsCamera.MouseGroundPoint(this, out Vector3 aim))
         {
             // Ask. Do not act. The server decides whether this happened at all.
-            RpcId(NetworkManager.ServerPeerId, MethodName.RequestCast, 0, aim);
+            RequestAbility(slot, aim);
             GetViewport().SetInputAsHandled();
         }
     }
 
     // ---------------------------------------------------------------------
-    // The client -> server surface.
+    // Abilities
     //
-    // This is the ONLY method on a hero a client may invoke, and it carries
-    // INTENT, never an outcome: which ability, aimed where. No damage number
-    // crosses the wire from a client, so "I do 1000000 damage" has nowhere to live.
-    //
-    // Every AnyPeer method is attack surface. Keep this list short enough to audit
-    // by reading it.
+    // There is no cast RPC on Hero any more. Everything a player asks for goes
+    // through CommandRouter's single door, so growing the kit does not grow the
+    // number of places a client can reach.
     // ---------------------------------------------------------------------
 
-    [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = true)]
-    public void RequestCast(int abilityIndex, Vector3 aimPoint)
+    public Ability AbilityAt(int slot) => slot >= 0 && slot < Kit.Count ? Kit[slot] : null;
+
+    public bool IsAbilityReady(int slot, double now)
+        => slot >= 0 && slot < _serverReadyAt.Length && now >= _serverReadyAt[slot];
+
+    public double AbilityReadyAt(int slot)
+        => slot >= 0 && slot < _serverReadyAt.Length ? _serverReadyAt[slot] : 0.0;
+
+    public void StartCooldown(int slot, double now)
     {
-        if (!IsServer) return;
-
-        // 1. Who really sent this? The transport says so; the payload cannot lie
-        //    about it. Zero means it was called locally, i.e. by the host itself.
-        int sender = Multiplayer.GetRemoteSenderId();
-        if (sender == 0) sender = Multiplayer.GetUniqueId();
-
-        // 2. Never trust an id in the arguments. This RPC can only ever affect the
-        //    hero belonging to whoever sent it.
-        if (sender != PeerId)
-        {
-            GD.PushWarning($"Peer {sender} tried to cast as hero {PeerId}. Ignored.");
-            return;
-        }
-
-        // 3-5. Server-owned preconditions. The client's cooldown UI is decoration;
-        //      this timer is the real one.
-        if (!IsAlive) return;
-        if (abilityIndex != 0) return;
-
-        double now = Now;
-        if (now < _zapReadyAt) return;
-
-        if (GetTree().GetFirstNodeInGroup(Boss.GroupName) is not Boss boss || !boss.IsAlive) return;
-
-        // Range measured against the VALIDATED position, not the claimed one.
-        if (ServerPosition.DistanceTo(boss.GlobalPosition) > ZapRange) return;
-
-        _zapReadyAt = now + ZapCooldown;
-
-        // 6. Only now does a damage number exist, and the server is the one that
-        //    produced it -- from its own copy of the stats. A cheater editing the
-        //    shipped ability data changes their own UI and nothing else.
-        boss.ApplyDamage(ZapDamage, this, "Strike");
-        Rpc(MethodName.PlayCastEffect, aimPoint);
+        if (slot < 0 || slot >= _serverReadyAt.Length) return;
+        _serverReadyAt[slot] = now + Kit[slot].Cooldown;
     }
 
-    /// Authority mode: only the server may broadcast this, so clients cannot fake
-    /// effects at each other.
-    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
-    private void PlayCastEffect(Vector3 at)
+    /// <summary>How much of the cooldown is left, 0 to 1, for the local player's HUD.</summary>
+    public float CooldownFraction(int slot, double now)
     {
-        // Placeholder. Real hit effects go here.
+        Ability ability = AbilityAt(slot);
+        if (ability is null || ability.Cooldown <= 0f) return 0f;
+        if (slot >= _clientReadyAt.Length) return 0f;
+        return Mathf.Clamp((float)((_clientReadyAt[slot] - now) / ability.Cooldown), 0f, 1f);
+    }
+
+    /// <summary>Server: tell the owner what its cooldown really is. Zero clears one.</summary>
+    public void AcknowledgeCast(int slot, double readyAt)
+    {
+        if (!IsServer) return;
+        RpcId(PeerId, MethodName.OnCastAcknowledged, slot, readyAt);
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void OnCastAcknowledged(int slot, double readyAt)
+    {
+        if (!IsLocalPlayer || slot < 0 || slot >= _clientReadyAt.Length) return;
+        _clientReadyAt[slot] = readyAt;
+    }
+
+    private void RequestAbility(int slot, Vector3 aimPoint)
+    {
+        Ability ability = AbilityAt(slot);
+        if (ability is null) return;
+
+        // Optimistic, so the button responds on the frame you pressed it. The
+        // server's acknowledgement either confirms this or clears it.
+        if (slot < _clientReadyAt.Length) _clientReadyAt[slot] = Now + ability.Cooldown;
+
+        CommandRouter.Send(ClientCommandType.CastAbility, new Godot.Collections.Dictionary
+        {
+            ["slot"] = slot,
+            ["aim"] = aimPoint,
+        });
+    }
+
+    private static bool TryAbilitySlot(Key keycode, out int slot)
+    {
+        slot = keycode switch { Key.Q => 0, Key.W => 1, Key.E => 2, Key.R => 3, _ => -1 };
+        return slot >= 0;
     }
 }
