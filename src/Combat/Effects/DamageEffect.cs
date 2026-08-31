@@ -6,14 +6,14 @@ namespace Wipebound.Combat;
 [GlobalClass]
 public partial class DamageEffect : AbilityEffect
 {
-    [Export] public float Amount = 25f;
+    [Export] public float Amount { get; set; } = 25f;
 
     public override void Resolve(EffectContext context)
     {
-        foreach (var hero in context.Inside)
-            hero.ApplyDamage(Amount, context.AbilityName);
+        foreach (ICombatant target in context.Targets)
+            target.ApplyDamage(Amount, context.Caster, context.AbilityName);
     }
 
     public override string Describe(EffectContext context)
-        => $"Damage {Amount} to {context.Inside.Count} inside";
+        => $"Damage {Amount} to {context.Targets.Count} inside";
 }

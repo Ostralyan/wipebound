@@ -1,7 +1,6 @@
 using Godot;
 using System.Collections.Generic;
 using Wipebound.Net;
-using Wipebound.Player;
 
 namespace Wipebound.Combat;
 
@@ -13,12 +12,11 @@ namespace Wipebound.Combat;
 /// telegraph is a RENDERING OF A SERVER DECISION, not a piece of game state. If a
 /// client never draws it, the damage still lands.
 /// </summary>
-public partial class Boss : Node3D
+public partial class Boss : Node3D, ICombatant
 {
     public const string GroupName = "boss";
 
     [Export] public string DisplayName { get; set; } = "The Wipebringer";
-    [Export] public float MaxHealth { get; set; } = 4000f;
 
     /// Seconds past a telegraph's visible end before the server resolves it. See
     /// BeginCast for why this exists at all; the real value also accounts for the
@@ -34,14 +32,27 @@ public partial class Boss : Node3D
     [Export] public Godot.Collections.Array<BossPhase> Phases { get; set; } = new();
 
     // --- Replicated by StatsSync. Authority: the server. ---
-    [Export] public float Health { get; set; } = 4000f;
+    private readonly ResourcePool _health = new(4000f);
+
+    [Export] public float Health { get => _health.Current; set => _health.Current = value; }
+    [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
     [Export] public int PhaseIndex { get; set; }
 
     /// Fires on every peer the moment a telegraph appears, so the HUD can draw a
     /// cast bar without knowing anything about the encounter.
     [Signal] public delegate void CastStartedEventHandler(string label, double startTime, double endTime, Color color);
 
-    public bool IsAlive => Health > 0f;
+    // --- ICombatant ---
+    public string CombatName => DisplayName;
+    public Team Team => Team.Enemies;
+    public Vector3 CombatPosition => GlobalPosition;
+    public bool IsAlive => !_health.IsEmpty;
+    public ResourcePool HealthPool => _health;
+    public Node3D Node => this;
+
+    /// Bosses are anchored. Knockback effects are safe to point at one; they simply
+    /// do nothing, rather than every ability needing to ask what it hit.
+    public void Displace(Vector3 destination, float travelSeconds) { }
 
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
@@ -49,18 +60,19 @@ public partial class Boss : Node3D
     private Label3D _label;
 
     // --- Server-only encounter state. None of it is replicated. ---
-    private BossAbility _casting;
+    private Ability _casting;
     private TelegraphArea _area;
     private double _castEndAt;
     private double _resolveAt;
     private double _nextCastAt;
     private double _resetAt;
-    private readonly Dictionary<BossAbility, double> _readyAt = new();
+    private readonly Dictionary<Ability, double> _readyAt = new();
     private readonly RandomNumberGenerator _rng = new();
 
     public override void _Ready()
     {
         AddToGroup(GroupName);
+        AddToGroup(Combatants.GroupName);
         _label = GetNode<Label3D>("NameLabel");
         _rng.Randomize();
 
@@ -69,7 +81,7 @@ public partial class Boss : Node3D
 
         if (IsServer)
         {
-            Health = MaxHealth;
+            _health.Fill();
             PhaseIndex = 0;
         }
     }
@@ -104,9 +116,9 @@ public partial class Boss : Node3D
 
         // Nothing to fight if nobody is alive to fight it. Without this the boss
         // would keep casting into an empty arena on a dedicated server.
-        if (LivingHeroes().Count == 0) return;
+        if (Combatants.Living(this, this, TargetFilter.Enemies).Count == 0) return;
 
-        BossAbility next = PickAbility(now);
+        Ability next = PickAbility(now);
         if (next is not null) BeginCast(next, now);
     }
 
@@ -116,7 +128,7 @@ public partial class Boss : Node3D
 
     private void UpdatePhase()
     {
-        float percent = Health / MaxHealth * 100f;
+        float percent = _health.Fraction * 100f;
         int wanted = 0;
 
         // Phases are listed highest threshold first, so the last one whose gate we
@@ -131,13 +143,13 @@ public partial class Boss : Node3D
         GD.Print($"[boss] entering phase {PhaseIndex}: {CurrentPhase?.Name}");
     }
 
-    private BossAbility PickAbility(double now)
+    private Ability PickAbility(double now)
     {
         BossPhase phase = CurrentPhase;
         if (phase is null) return null;
 
-        var ready = new List<BossAbility>();
-        foreach (BossAbility ability in phase.Abilities)
+        var ready = new List<Ability>();
+        foreach (Ability ability in phase.Abilities)
         {
             if (ability is null) continue;
             if (_readyAt.TryGetValue(ability, out double readyAt) && now < readyAt) continue;
@@ -149,46 +161,34 @@ public partial class Boss : Node3D
     }
 
     /// <summary>
-    /// Where the mechanic is aimed. Radial shapes land ON this point; directional
-    /// shapes start at the boss and point AT it.
+    /// Where the mechanic is aimed. What the footprint then DOES with that point is
+    /// the ability's AbilityOrigin, not this method's business -- which is why the
+    /// old "a cone centred on the boss has nothing to aim at" special case is gone.
     /// </summary>
-    private Vector3 TargetPointFor(BossAbility ability)
+    private Vector3 AimPointFor(Ability ability)
     {
-        List<Hero> heroes = LivingHeroes();
-        if (heroes.Count == 0) return GlobalPosition;
+        List<ICombatant> enemies = Combatants.Living(this, this, TargetFilter.Enemies);
+        if (enemies.Count == 0) return GlobalPosition;
 
-        switch (ability.Targeting)
+        return ability.AiTargeting switch
         {
-            case TargetingRule.ArenaCenter:
-                return Vector3.Zero;
-
-            case TargetingRule.BossPosition:
-                // "The boss's own position" gives a cone nothing to aim at, so a
-                // boss-centred directional mechanic sweeps toward whoever is closest.
-                return ability.Shape is TelegraphShape.Cone or TelegraphShape.Rectangle
-                    ? ByDistance(heroes, nearest: true).ServerPosition
-                    : GlobalPosition;
-
-            case TargetingRule.NearestPlayer:
-                return ByDistance(heroes, nearest: true).ServerPosition;
-
-            case TargetingRule.FarthestPlayer:
-                return ByDistance(heroes, nearest: false).ServerPosition;
-
-            default:
-                return heroes[(int)(_rng.Randi() % (uint)heroes.Count)].ServerPosition;
-        }
+            AiTargeting.ArenaCentre => Vector3.Zero,
+            AiTargeting.Self => GlobalPosition,
+            AiTargeting.NearestEnemy => Combatants.ByDistance(enemies, GlobalPosition, nearest: true).CombatPosition,
+            AiTargeting.FarthestEnemy => Combatants.ByDistance(enemies, GlobalPosition, nearest: false).CombatPosition,
+            _ => enemies[(int)(_rng.Randi() % (uint)enemies.Count)].CombatPosition,
+        };
     }
 
     // ---------------------------------------------------------------------
     // Warn
     // ---------------------------------------------------------------------
 
-    private void BeginCast(BossAbility ability, double now)
+    private void BeginCast(Ability ability, double now)
     {
         _casting = ability;
-        _area = ability.BuildArea(GlobalPosition, TargetPointFor(ability));
-        _castEndAt = now + ability.TelegraphSeconds;
+        _area = ability.BuildArea(GlobalPosition, AimPointFor(ability));
+        _castEndAt = now + ability.CastSeconds;
         _readyAt[ability] = now + ability.Cooldown;
 
         // ---- THE TRAILING EDGE ----
@@ -217,7 +217,7 @@ public partial class Boss : Node3D
 
         GD.Print($"[boss] cast {ability.DisplayName} ({ability.Shape}) " +
                  $"at {Flat(_area.Center)} r={_area.Radius} " +
-                 $"telegraph={ability.TelegraphSeconds:0.00}s grace={grace:0.000}s");
+                 $"telegraph={ability.CastSeconds:0.00}s grace={grace:0.000}s");
     }
 
     /// <summary>
@@ -239,35 +239,36 @@ public partial class Boss : Node3D
 
     private void Resolve(double now)
     {
-        BossAbility ability = _casting;
+        Ability ability = _casting;
         _casting = null;
         _nextCastAt = now + (CurrentPhase?.RecoverySeconds ?? 2.0);
 
-        List<Hero> everyone = LivingHeroes();
-        var inside = new List<Hero>();
+        List<ICombatant> candidates = Combatants.Living(this, this, ability.Affects);
+        var targets = new List<ICombatant>();
 
         GD.Print($"[resolve] {ability.DisplayName} at {Flat(_area.Center)}");
 
-        foreach (Hero hero in everyone)
+        foreach (ICombatant candidate in candidates)
         {
-            // The validated position, never the raw claim. Field() is negative
-            // inside and positive outside, in metres -- so this line is also how
-            // you check the shader against the maths: stand on the edge and watch
-            // the number cross zero.
-            float field = _area.Field(hero.ServerPosition);
+            // CombatPosition is the validated position, never the raw claim.
+            // Field() is negative inside and positive outside, in metres -- so this
+            // line is also how you check the shader against the maths: stand on the
+            // edge and watch the number cross zero.
+            float field = _area.Field(candidate.CombatPosition);
             bool hit = field <= 0f;
-            if (hit) inside.Add(hero);
+            if (hit) targets.Add(candidate);
 
-            GD.Print($"[resolve]   hero {hero.PeerId} at {Flat(hero.ServerPosition)} " +
+            GD.Print($"[resolve]   {candidate.CombatName} at {Flat(candidate.CombatPosition)} " +
                      $"field={field:+0.00;-0.00}m -> {(hit ? "HIT" : "safe")}");
         }
 
         var context = new EffectContext
         {
             AbilityName = ability.DisplayName,
+            Caster = this,
             Area = _area,
-            Inside = inside,
-            Everyone = everyone,
+            Targets = targets,
+            Candidates = candidates,
         };
 
         foreach (AbilityEffect effect in ability.Effects)
@@ -282,11 +283,11 @@ public partial class Boss : Node3D
     // Health and lifecycle
     // ---------------------------------------------------------------------
 
-    public void ApplyDamage(float amount)
+    public void ApplyDamage(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        Health = Mathf.Max(0f, Health - amount);
+        _health.Drain(amount);
 
         if (IsAlive) return;
 
@@ -295,9 +296,15 @@ public partial class Boss : Node3D
         GD.Print($"[boss] {DisplayName} defeated. Resetting in {ResetSeconds}s.");
     }
 
+    public void Heal(float amount, ICombatant source, string label)
+    {
+        if (!IsServer || !IsAlive || amount <= 0f) return;
+        _health.Restore(amount);
+    }
+
     private void RestartEncounter()
     {
-        Health = MaxHealth;
+        _health.Fill();
         PhaseIndex = 0;
         _readyAt.Clear();
         _casting = null;
@@ -307,39 +314,12 @@ public partial class Boss : Node3D
 
     // ---------------------------------------------------------------------
 
-    private List<Hero> LivingHeroes()
-    {
-        var living = new List<Hero>();
-        foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
-            if (node is Hero hero && hero.IsAlive)
-                living.Add(hero);
-        return living;
-    }
-
-    private Hero ByDistance(List<Hero> heroes, bool nearest)
-    {
-        Hero best = heroes[0];
-        float bestDistance = best.ServerPosition.DistanceSquaredTo(GlobalPosition);
-
-        foreach (Hero hero in heroes)
-        {
-            float distance = hero.ServerPosition.DistanceSquaredTo(GlobalPosition);
-            if (nearest ? distance < bestDistance : distance > bestDistance)
-            {
-                best = hero;
-                bestDistance = distance;
-            }
-        }
-
-        return best;
-    }
-
     private void UpdateLabel()
     {
         if (_label is null) return;
 
         _label.Text = IsAlive
-            ? $"{DisplayName}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(MaxHealth)}"
+            ? $"{DisplayName}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}"
             : $"{DisplayName}\nDEFEATED";
     }
 

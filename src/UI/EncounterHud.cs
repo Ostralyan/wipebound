@@ -73,7 +73,7 @@ public partial class EncounterHud : Control
             ? $"{_boss.DisplayName}   —   {phase}"
             : $"{_boss.DisplayName}   —   DEFEATED";
 
-        _bossHealth.MaxValue = _boss.MaxHealth;
+        _bossHealth.MaxValue = _boss.HealthMax;
         _bossHealth.Value = _boss.Health;
     }
 

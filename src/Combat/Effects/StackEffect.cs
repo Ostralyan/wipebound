@@ -9,24 +9,24 @@ namespace Wipebound.Combat;
 [GlobalClass]
 public partial class StackEffect : AbilityEffect
 {
-    [Export] public float TotalDamage = 180f;
+    [Export] public float TotalDamage { get; set; } = 180f;
 
     public override void Resolve(EffectContext context)
     {
-        if (context.Inside.Count == 0)
+        if (context.Targets.Count == 0)
         {
-            foreach (var hero in context.Everyone)
-                hero.ApplyDamage(TotalDamage, $"{context.AbilityName} (nobody stacked)");
+            foreach (ICombatant candidate in context.Candidates)
+                candidate.ApplyDamage(TotalDamage, context.Caster, $"{context.AbilityName} (nobody stacked)");
             return;
         }
 
-        float share = TotalDamage / context.Inside.Count;
-        foreach (var hero in context.Inside)
-            hero.ApplyDamage(share, $"{context.AbilityName} (split {context.Inside.Count} ways)");
+        float share = TotalDamage / context.Targets.Count;
+        foreach (ICombatant target in context.Targets)
+            target.ApplyDamage(share, context.Caster, $"{context.AbilityName} (split {context.Targets.Count} ways)");
     }
 
     public override string Describe(EffectContext context)
-        => context.Inside.Count == 0
-            ? $"NOBODY STACKED: {TotalDamage} to all {context.Everyone.Count}"
-            : $"Stack split {context.Inside.Count} ways: {TotalDamage / context.Inside.Count:0.#} each";
+        => context.Targets.Count == 0
+            ? $"NOBODY STACKED: {TotalDamage} to all {context.Candidates.Count}"
+            : $"Stack split {context.Targets.Count} ways: {TotalDamage / context.Targets.Count:0.#} each";
 }

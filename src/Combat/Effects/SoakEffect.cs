@@ -12,25 +12,25 @@ namespace Wipebound.Combat;
 [GlobalClass]
 public partial class SoakEffect : AbilityEffect
 {
-    [Export] public int RequiredSoakers = 1;
-    [Export] public float DamagePerSoaker = 20f;
-    [Export] public float UnsoakedDamage = 60f;
+    [Export] public int RequiredSoakers { get; set; } = 1;
+    [Export] public float DamagePerSoaker { get; set; } = 20f;
+    [Export] public float UnsoakedDamage { get; set; } = 60f;
 
     public override void Resolve(EffectContext context)
     {
-        if (context.Inside.Count >= RequiredSoakers)
+        if (context.Targets.Count >= RequiredSoakers)
         {
-            foreach (var hero in context.Inside)
-                hero.ApplyDamage(DamagePerSoaker, $"{context.AbilityName} (soaked)");
+            foreach (ICombatant target in context.Targets)
+                target.ApplyDamage(DamagePerSoaker, context.Caster, $"{context.AbilityName} (soaked)");
             return;
         }
 
-        foreach (var hero in context.Everyone)
-            hero.ApplyDamage(UnsoakedDamage, $"{context.AbilityName} (unsoaked)");
+        foreach (ICombatant candidate in context.Candidates)
+            candidate.ApplyDamage(UnsoakedDamage, context.Caster, $"{context.AbilityName} (unsoaked)");
     }
 
     public override string Describe(EffectContext context)
-        => context.Inside.Count >= RequiredSoakers
-            ? $"Soaked by {context.Inside.Count}/{RequiredSoakers}: {DamagePerSoaker} each"
-            : $"UNSOAKED ({context.Inside.Count}/{RequiredSoakers}): {UnsoakedDamage} to all {context.Everyone.Count}";
+        => context.Targets.Count >= RequiredSoakers
+            ? $"Soaked by {context.Targets.Count}/{RequiredSoakers}: {DamagePerSoaker} each"
+            : $"UNSOAKED ({context.Targets.Count}/{RequiredSoakers}): {UnsoakedDamage} to all {context.Candidates.Count}";
 }

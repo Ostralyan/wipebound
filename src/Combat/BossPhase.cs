@@ -21,5 +21,5 @@ public partial class BossPhase : Resource
     /// this in later phases is the cheapest way to raise pressure.
     [Export] public float RecoverySeconds { get; set; } = 2.0f;
 
-    [Export] public Godot.Collections.Array<BossAbility> Abilities { get; set; } = new();
+    [Export] public Godot.Collections.Array<Ability> Abilities { get; set; } = new();
 }

@@ -33,27 +33,31 @@ public static class DefaultEncounter
         // per ability instance, so a mechanic that survives a phase change keeps
         // its timer instead of being free to fire again immediately.
 
-        var crater = new BossAbility
+        var crater = new Ability
         {
+            Id = "crater",
             DisplayName = "Crater",
             Shape = TelegraphShape.Circle,
             Radius = 9f,
-            TelegraphSeconds = 2.6f,
+            CastSeconds = 2.6f,
             Cooldown = 8f,
-            Targeting = TargetingRule.RandomPlayer,
+            AiTargeting = AiTargeting.RandomEnemy,
+            Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = Danger,
             Effects = new Array<AbilityEffect> { new DamageEffect { Amount = 26f } },
         };
 
-        var sunder = new BossAbility
+        var sunder = new Ability
         {
+            Id = "sunder",
             DisplayName = "Sunder",
             Shape = TelegraphShape.Cone,
             Radius = 20f,
             ConeAngleDegrees = 80f,
-            TelegraphSeconds = 2.0f,
+            CastSeconds = 2.0f,
             Cooldown = 13f,
-            Targeting = TargetingRule.BossPosition,
+            AiTargeting = AiTargeting.NearestEnemy,
+            Origin = AbilityOrigin.FromCasterTowardAim,
             TelegraphColor = Danger,
             Effects = new Array<AbilityEffect>
             {
@@ -64,14 +68,16 @@ public static class DefaultEncounter
 
         // Inverted danger: the raid is punished for leaving this one EMPTY, which
         // turns a dodge into a decision somebody has to announce.
-        var beacon = new BossAbility
+        var beacon = new Ability
         {
+            Id = "beacon",
             DisplayName = "Beacon",
             Shape = TelegraphShape.Circle,
             Radius = 4.5f,
-            TelegraphSeconds = 3.2f,
+            CastSeconds = 3.2f,
             Cooldown = 16f,
-            Targeting = TargetingRule.FarthestPlayer,
+            AiTargeting = AiTargeting.FarthestEnemy,
+            Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = Soak,
             Effects = new Array<AbilityEffect>
             {
@@ -81,42 +87,48 @@ public static class DefaultEncounter
 
         // A safe hole in the middle instead of outside it -- the same dodge run
         // backwards, which is why donuts pair well with circles.
-        var collapse = new BossAbility
+        var collapse = new Ability
         {
+            Id = "collapse",
             DisplayName = "Collapse",
             Shape = TelegraphShape.Donut,
             Radius = 24f,
             InnerRadius = 7f,
-            TelegraphSeconds = 2.8f,
+            CastSeconds = 2.8f,
             Cooldown = 15f,
-            Targeting = TargetingRule.ArenaCenter,
+            AiTargeting = AiTargeting.ArenaCentre,
+            Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = Danger,
             Effects = new Array<AbilityEffect> { new DamageEffect { Amount = 42f } },
         };
 
-        var lance = new BossAbility
+        var lance = new Ability
         {
+            Id = "lance",
             DisplayName = "Lance",
             Shape = TelegraphShape.Rectangle,
             Radius = 44f,
             RectHalfWidth = 3.5f,
-            TelegraphSeconds = 2.2f,
+            CastSeconds = 2.2f,
             Cooldown = 11f,
-            Targeting = TargetingRule.RandomPlayer,
+            AiTargeting = AiTargeting.RandomEnemy,
+            Origin = AbilityOrigin.FromCasterTowardAim,
             TelegraphColor = Danger,
             Effects = new Array<AbilityEffect> { new DamageEffect { Amount = 38f } },
         };
 
         // Enough damage to kill anyone taking it alone, so the only answer is to
         // stand on top of each other.
-        var convergence = new BossAbility
+        var convergence = new Ability
         {
+            Id = "convergence",
             DisplayName = "Convergence",
             Shape = TelegraphShape.Circle,
             Radius = 5.5f,
-            TelegraphSeconds = 3.4f,
+            CastSeconds = 3.4f,
             Cooldown = 18f,
-            Targeting = TargetingRule.RandomPlayer,
+            AiTargeting = AiTargeting.RandomEnemy,
+            Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = Stack,
             Effects = new Array<AbilityEffect> { new StackEffect { TotalDamage = 220f } },
         };
@@ -131,21 +143,21 @@ public static class DefaultEncounter
                 Name = "Opening",
                 EntersAtHealthPercent = 100f,
                 RecoverySeconds = 2.4f,
-                Abilities = new Array<BossAbility> { crater, sunder, beacon },
+                Abilities = new Array<Ability> { crater, sunder, beacon },
             },
             new BossPhase
             {
                 Name = "Fracture",
                 EntersAtHealthPercent = 60f,
                 RecoverySeconds = 1.8f,
-                Abilities = new Array<BossAbility> { crater, sunder, beacon, collapse, lance },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance },
             },
             new BossPhase
             {
                 Name = "Wipebound",
                 EntersAtHealthPercent = 25f,
                 RecoverySeconds = 1.2f,
-                Abilities = new Array<BossAbility> { crater, sunder, beacon, collapse, lance, convergence },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, convergence },
             },
         };
     }

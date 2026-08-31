@@ -19,7 +19,7 @@ namespace Wipebound.Player;
 ///             synchronizer, any player could set their own health to 999999 and
 ///             the engine would replicate it faithfully to everyone.
 /// </summary>
-public partial class Hero : CharacterBody3D
+public partial class Hero : CharacterBody3D, ICombatant
 {
     public const string GroupName = "hero";
 
@@ -29,7 +29,6 @@ public partial class Hero : CharacterBody3D
     [Export] public float ArriveDistance = 0.4f;
 
     [ExportGroup("Stats")]
-    [Export] public float MaxHealth = 100f;
     [Export] public float RespawnSeconds = 6f;
 
     [ExportGroup("Attack (placeholder for the real ability system)")]
@@ -42,13 +41,33 @@ public partial class Hero : CharacterBody3D
     [Export] public float NetFacing { get; set; }
 
     // --- Replicated by StatsSync. Authority: the server. Read-only everywhere else. ---
-    [Export] public float Health { get; set; } = 100f;
+    //
+    // These proxy into plain C# pools. A ResourcePool is not a Node and so cannot be
+    // replicated directly; exposing [Export] scalars over it keeps the synchronizer
+    // working while the logic lives somewhere testable.
+    private readonly ResourcePool _health = new(100f);
+
+    [Export] public float Health { get => _health.Current; set => _health.Current = value; }
+    [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
 
     /// The peer that owns this hero, carried by the node's name (see NetworkManager).
     public int PeerId { get; private set; }
 
     public bool IsLocalPlayer => PeerId == Multiplayer.GetUniqueId();
-    public bool IsAlive => Health > 0f;
+
+    // --- ICombatant ---
+    public string CombatName => $"hero {PeerId}";
+    public Team Team => Team.Players;
+    public bool IsAlive => !_health.IsEmpty;
+    public ResourcePool HealthPool => _health;
+    public Node3D Node => this;
+
+    /// <summary>
+    /// What the SERVER believes, which is the speed-clamped copy rather than the
+    /// position the client last claimed. Every area and range test in the game reads
+    /// this, which is what stops a modified client asserting it dodged.
+    /// </summary>
+    public Vector3 CombatPosition => ServerPosition;
 
     /// <summary>
     /// Where this hero starts, and where it returns on death.
@@ -117,6 +136,7 @@ public partial class Hero : CharacterBody3D
     public override void _Ready()
     {
         AddToGroup(GroupName);
+        AddToGroup(Combatants.GroupName);
 
         _agent = GetNode<NavigationAgent3D>("NavAgent");
         _label = GetNode<Label3D>("NameLabel");
@@ -135,7 +155,7 @@ public partial class Hero : CharacterBody3D
             AlbedoColor = IsLocalPlayer ? new Color("4ade80") : new Color("94a3b8"),
         };
 
-        if (IsServer) Health = MaxHealth;
+        if (IsServer) _health.Fill();
 
         if (IsLocalPlayer)
         {
@@ -169,24 +189,33 @@ public partial class Hero : CharacterBody3D
     /// Server only. Nothing on a client can reach this, and no client-supplied
     /// number reaches it either -- callers compute damage from server-side data.
     /// </summary>
-    public void ApplyDamage(float amount, string source = "")
+    public void ApplyDamage(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        Health = Mathf.Max(0f, Health - amount);
+        _health.Drain(amount);
 
         if (!IsAlive)
         {
             _respawnAt = Now + RespawnSeconds;
-            GD.Print($"[combat] hero {PeerId} died to {source}");
+            GD.Print($"[combat] {CombatName} died to {label}");
         }
     }
+
+    public void Heal(float amount, ICombatant source, string label)
+    {
+        if (!IsServer || !IsAlive || amount <= 0f) return;
+        _health.Restore(amount);
+    }
+
+    /// ICombatant knockback entry point; see ServerPush for why it is a request.
+    public void Displace(Vector3 destination, float travelSeconds) => ServerPush(destination, travelSeconds);
 
     private void UpdateRespawn()
     {
         if (IsAlive || Now < _respawnAt) return;
 
-        Health = MaxHealth;
+        _health.Fill();
         ServerTeleport(SpawnPoint);
         GD.Print($"[combat] hero {PeerId} respawned");
     }
@@ -387,11 +416,11 @@ public partial class Hero : CharacterBody3D
         _nose.Visible = IsAlive;
 
         _label.Text = IsAlive
-            ? $"{PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(MaxHealth)}"
+            ? $"{PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}"
             : $"{PeerId}\nDEAD";
 
         _label.Modulate = !IsAlive ? new Color("64748b")
-            : Health > MaxHealth * 0.35f ? Colors.White
+            : _health.Fraction > 0.35f ? Colors.White
             : new Color("f87171");
     }
 
@@ -471,7 +500,7 @@ public partial class Hero : CharacterBody3D
         // 6. Only now does a damage number exist, and the server is the one that
         //    produced it -- from its own copy of the stats. A cheater editing the
         //    shipped ability data changes their own UI and nothing else.
-        boss.ApplyDamage(ZapDamage);
+        boss.ApplyDamage(ZapDamage, this, "Strike");
         Rpc(MethodName.PlayCastEffect, aimPoint);
     }
 
