@@ -1,2 +1,33 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+
+# Godot text formats -- always text, never mangled
+*.tscn   text eol=lf
+*.tres   text eol=lf
+*.godot  text eol=lf
+*.gd     text eol=lf
+*.cs     text eol=lf diff=csharp
+*.csproj text eol=lf
+*.sln    text eol=crlf
+
+# Binary assets. Marking these stops Git from trying line-ending conversion,
+# which silently corrupts them.
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.tga    binary
+*.exr    binary
+*.hdr    binary
+*.ogg    binary
+*.wav    binary
+*.mp3    binary
+*.glb    binary
+*.gltf   binary
+*.fbx    binary
+*.blend  binary
+*.obj    binary
+*.ttf    binary
+*.otf    binary
+*.pck    binary
+*.zip    binary

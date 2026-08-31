@@ -1,0 +1,11 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>Wipebound</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <!-- Godot's source generators emit partial classes; treating warnings as
+         errors here would fight them. Keep warnings visible but non-fatal. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

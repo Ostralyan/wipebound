@@ -1,0 +1,69 @@
+[gd_scene load_steps=7 format=3]
+
+[ext_resource type="Script" path="res://src/Player/Hero.cs" id="1_hero"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_body"]
+radius = 0.45
+height = 1.8
+
+[sub_resource type="BoxMesh" id="BoxMesh_nose"]
+size = Vector3(0.16, 0.16, 0.5)
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_hero"]
+radius = 0.45
+height = 1.8
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_move"]
+properties/0/path = NodePath(".:NetPosition")
+properties/0/spawn = true
+properties/0/replication_mode = 1
+properties/1/path = NodePath(".:NetFacing")
+properties/1/spawn = true
+properties/1/replication_mode = 1
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_stats"]
+properties/0/path = NodePath(".:Health")
+properties/0/spawn = true
+properties/0/replication_mode = 2
+
+[node name="Hero" type="CharacterBody3D"]
+collision_layer = 2
+collision_mask = 1
+script = ExtResource("1_hero")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_body")
+
+[node name="Nose" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, -0.52)
+mesh = SubResource("BoxMesh_nose")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_hero")
+
+[node name="NavAgent" type="NavigationAgent3D" parent="."]
+path_desired_distance = 0.5
+target_desired_distance = 0.5
+radius = 0.5
+height = 1.8
+avoidance_enabled = false
+
+[node name="NameLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.5, 0)
+pixel_size = 0.0022
+billboard = 1
+no_depth_test = true
+fixed_size = true
+text = "hero"
+font_size = 56
+outline_size = 14
+
+[node name="MoveSync" type="MultiplayerSynchronizer" parent="."]
+replication_interval = 0.05
+delta_interval = 0.05
+replication_config = SubResource("SceneReplicationConfig_move")
+
+[node name="StatsSync" type="MultiplayerSynchronizer" parent="."]
+replication_config = SubResource("SceneReplicationConfig_stats")
