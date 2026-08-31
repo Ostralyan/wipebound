@@ -176,7 +176,11 @@ public partial class NetworkManager : Node
         // Marked spawn=true in the replication config, so this initial placement
         // rides along with the spawn packet even though the CLIENT owns position
         // from here on.
-        hero.NetPosition = SpawnPointFor(_peersWithHeroes.Count);
+        Vector3 spawn = SpawnPointFor(_peersWithHeroes.Count);
+        hero.NetPosition = spawn;
+
+        // Server-side only, and never replicated: where this hero returns on death.
+        hero.SpawnPoint = spawn;
 
         _peersWithHeroes.Add(peerId);
         _heroContainer.AddChild(hero, true);

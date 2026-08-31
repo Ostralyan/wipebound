@@ -1,9 +1,10 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="Script" path="res://src/World/Main.cs" id="1_main"]
 [ext_resource type="Script" path="res://src/Player/RtsCamera.cs" id="2_camera"]
-[ext_resource type="Script" path="res://src/World/TrainingDummy.cs" id="3_dummy"]
+[ext_resource type="Script" path="res://src/Combat/Boss.cs" id="3_boss"]
 [ext_resource type="Script" path="res://src/UI/Lobby.cs" id="4_lobby"]
+[ext_resource type="Script" path="res://src/UI/EncounterHud.cs" id="5_hud"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 sky_horizon_color = Color(0.28, 0.31, 0.36, 1)
@@ -31,18 +32,22 @@ size = Vector2(120, 120)
 [sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
 size = Vector3(120, 1, 120)
 
-[sub_resource type="CylinderMesh" id="CylinderMesh_dummy"]
-top_radius = 1.2
-bottom_radius = 1.6
-height = 3.0
+[sub_resource type="CylinderMesh" id="CylinderMesh_boss"]
+top_radius = 1.5
+bottom_radius = 2.2
+height = 4.0
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_dummy"]
-albedo_color = Color(0.85, 0.36, 0.32, 1)
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_boss"]
+albedo_color = Color(0.62, 0.16, 0.2, 1)
+roughness = 0.65
 
-[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_dummy"]
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_boss"]
 properties/0/path = NodePath(".:Health")
 properties/0/spawn = true
 properties/0/replication_mode = 2
+properties/1/path = NodePath(".:PhaseIndex")
+properties/1/spawn = true
+properties/1/replication_mode = 2
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")
@@ -55,7 +60,7 @@ transform = Transform3D(0.819, 0, -0.574, -0.44, 0.643, -0.627, 0.369, 0.766, 0.
 light_energy = 1.1
 shadow_enabled = true
 
-[node name="NavRegion" type="NavigationRegion3D" parent="."]
+[node name="NavRegion" type="NavigationRegion3D" parent="." groups=["nav_region"]]
 navigation_mesh = SubResource("NavigationMesh_arena")
 
 [node name="Ground" type="StaticBody3D" parent="NavRegion"]
@@ -75,26 +80,28 @@ shape = SubResource("BoxShape3D_ground")
 _spawnable_scenes = PackedStringArray("res://src/Player/Hero.tscn")
 spawn_path = NodePath("../Heroes")
 
-[node name="TrainingDummy" type="Node3D" parent="."]
-script = ExtResource("3_dummy")
+[node name="Telegraphs" type="Node3D" parent="." groups=["telegraph_root"]]
 
-[node name="Body" type="MeshInstance3D" parent="TrainingDummy"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
-mesh = SubResource("CylinderMesh_dummy")
-material_override = SubResource("StandardMaterial3D_dummy")
+[node name="Boss" type="Node3D" parent="."]
+script = ExtResource("3_boss")
 
-[node name="HealthLabel" type="Label3D" parent="TrainingDummy"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 4, 0)
-pixel_size = 0.0028
+[node name="Body" type="MeshInstance3D" parent="Boss"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 0)
+mesh = SubResource("CylinderMesh_boss")
+material_override = SubResource("StandardMaterial3D_boss")
+
+[node name="NameLabel" type="Label3D" parent="Boss"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5.2, 0)
+pixel_size = 0.0032
 billboard = 1
 no_depth_test = true
 fixed_size = true
-text = "Dummy"
+text = "Boss"
 font_size = 56
 outline_size = 14
 
-[node name="StatsSync" type="MultiplayerSynchronizer" parent="TrainingDummy"]
-replication_config = SubResource("SceneReplicationConfig_dummy")
+[node name="StatsSync" type="MultiplayerSynchronizer" parent="Boss"]
+replication_config = SubResource("SceneReplicationConfig_boss")
 
 [node name="RtsCamera" type="Node3D" parent="."]
 script = ExtResource("2_camera")
@@ -104,6 +111,57 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 30)
 current = true
 
 [node name="UI" type="CanvasLayer" parent="."]
+
+[node name="Hud" type="Control" parent="UI"]
+mouse_filter = 2
+anchor_right = 1.0
+anchor_bottom = 1.0
+script = ExtResource("5_hud")
+
+[node name="Encounter" type="VBoxContainer" parent="UI/Hud"]
+mouse_filter = 2
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -260.0
+offset_top = 14.0
+offset_right = 260.0
+offset_bottom = 116.0
+grow_horizontal = 2
+theme_override_constants/separation = 4
+
+[node name="BossName" type="Label" parent="UI/Hud/Encounter"]
+mouse_filter = 2
+horizontal_alignment = 1
+text = "Boss"
+
+[node name="BossHealth" type="ProgressBar" parent="UI/Hud/Encounter"]
+mouse_filter = 2
+custom_minimum_size = Vector2(0, 18)
+show_percentage = false
+
+[node name="CastLabel" type="Label" parent="UI/Hud/Encounter"]
+mouse_filter = 2
+horizontal_alignment = 1
+text = "Casting"
+
+[node name="CastBar" type="ProgressBar" parent="UI/Hud/Encounter"]
+mouse_filter = 2
+custom_minimum_size = Vector2(0, 10)
+max_value = 1.0
+step = 0.001
+show_percentage = false
+
+[node name="NetDebug" type="Label" parent="UI/Hud"]
+mouse_filter = 2
+modulate = Color(1, 1, 1, 0.65)
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_left = 16.0
+offset_top = -32.0
+offset_right = 520.0
+offset_bottom = -12.0
+grow_vertical = 0
+text = "offline"
 
 [node name="Lobby" type="PanelContainer" parent="UI"]
 offset_left = 16.0
@@ -143,4 +201,4 @@ autowrap_mode = 3
 
 [node name="Help" type="Label" parent="UI/Lobby/Margin/Rows"]
 modulate = Color(1, 1, 1, 0.6)
-text = "Right-click: move\nQ: zap the dummy\nWASD / middle-drag: pan\nWheel: zoom    Space: recenter"
+text = "Right-click: move\nQ: attack the boss\nWASD / middle-drag: pan\nWheel: zoom    Space: recenter"
