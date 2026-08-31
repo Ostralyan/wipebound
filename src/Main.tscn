@@ -167,7 +167,7 @@ text = "offline"
 offset_left = 16.0
 offset_top = 16.0
 offset_right = 306.0
-offset_bottom = 236.0
+offset_bottom = 16.0
 script = ExtResource("4_lobby")
 
 [node name="Margin" type="MarginContainer" parent="UI/Lobby"]

@@ -279,13 +279,10 @@ public partial class Hero : CharacterBody3D
 
         if (_hasTarget && flatToTarget.Length() > ArriveDistance && IsAlive)
         {
-            Vector3 step = _useNavigation ? _agent.GetNextPathPosition() : _moveTarget;
-            Vector3 dir = step - GlobalPosition;
-            dir.Y = 0f;
+            Vector3 dir = SteeringDirection();
 
-            if (dir.LengthSquared() > 0.0001f)
+            if (dir != Vector3.Zero)
             {
-                dir = dir.Normalized();
                 Velocity = new Vector3(dir.X * MoveSpeed, 0f, dir.Z * MoveSpeed);
 
                 // Godot's forward is -Z, so the yaw that points -Z along dir is this.
@@ -301,6 +298,34 @@ public partial class Hero : CharacterBody3D
 
         MoveAndSlide();
         PublishPosition();
+    }
+
+    /// <summary>
+    /// Which way to walk, in the ground plane.
+    ///
+    /// Two things here are scar tissue, and both once froze movement completely.
+    ///
+    /// A baked navigation mesh does NOT sit at the height of the ground it was
+    /// baked from -- Recast places it a couple of voxels up, half a metre in this
+    /// arena. So the agent's next waypoint is routinely directly ABOVE the hero,
+    /// and any comparison that keeps the Y axis reads that as "somewhere to go"
+    /// when there is nowhere to go. Flatten before measuring, never after.
+    ///
+    /// And when the agent hands back a point we are already standing on, steer at
+    /// the final destination rather than returning zero. Returning zero leaves
+    /// Velocity untouched and the hero stands still forever with a live order,
+    /// which is indistinguishable from the game being broken.
+    /// </summary>
+    private Vector3 SteeringDirection()
+    {
+        Vector3 step = _useNavigation ? _agent.GetNextPathPosition() : _moveTarget;
+
+        Vector3 dir = new(step.X - GlobalPosition.X, 0f, step.Z - GlobalPosition.Z);
+
+        if (dir.LengthSquared() < 0.0004f)
+            dir = new Vector3(_moveTarget.X - GlobalPosition.X, 0f, _moveTarget.Z - GlobalPosition.Z);
+
+        return dir.LengthSquared() > 0.0001f ? dir.Normalized() : Vector3.Zero;
     }
 
     private void SlideThroughKnockback()
