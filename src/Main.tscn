@@ -27,10 +27,10 @@ geometry_parsed_geometry_type = 1
 geometry_collision_mask = 1
 
 [sub_resource type="PlaneMesh" id="PlaneMesh_ground"]
-size = Vector2(120, 120)
+size = Vector2(220, 220)
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
-size = Vector3(120, 1, 120)
+size = Vector3(220, 1, 220)
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_boss"]
 top_radius = 1.5
@@ -98,13 +98,13 @@ material_override = SubResource("StandardMaterial3D_boss")
 
 [node name="NameLabel" type="Label3D" parent="Boss"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 5.2, 0)
-pixel_size = 0.0032
+pixel_size = 0.00042
 billboard = 1
 no_depth_test = true
 fixed_size = true
 text = "Boss"
 font_size = 56
-outline_size = 14
+outline_size = 10
 
 [node name="StatsSync" type="MultiplayerSynchronizer" parent="Boss"]
 replication_config = SubResource("SceneReplicationConfig_boss")
