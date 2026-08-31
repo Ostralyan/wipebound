@@ -57,6 +57,12 @@ public interface ICombatant
     /// bosses, anchored hazards -- simply do nothing.
     /// </summary>
     void Displace(Vector3 destination, float travelSeconds);
+
+    /// <summary>
+    /// The encounter has restarted. Heroes come back to life here; the boss has
+    /// already reset itself by the time this is broadcast.
+    /// </summary>
+    void OnEncounterReset();
 }
 
 public static class Combatants

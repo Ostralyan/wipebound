@@ -44,7 +44,9 @@ public partial class NetworkManager : Node
 
     private Node _heroContainer;
     private PackedScene _heroScene;
-    private readonly List<int> _peersWithHeroes = new();
+    /// Which spawn slot each peer holds, so a slot vacated mid-session is reused
+    /// rather than handed out twice.
+    private readonly Dictionary<int, int> _slotByPeer = new();
 
     public override void _Ready()
     {
@@ -146,7 +148,7 @@ public partial class NetworkManager : Node
         Multiplayer.MultiplayerPeer?.Close();
         Multiplayer.MultiplayerPeer = null;
         Mode = NetMode.Offline;
-        _peersWithHeroes.Clear();
+        _slotByPeer.Clear();
 
         if (_heroContainer is not null)
             foreach (Node child in _heroContainer.GetChildren())
@@ -163,7 +165,10 @@ public partial class NetworkManager : Node
     private void SpawnHeroFor(int peerId)
     {
         if (!IsServer || _heroContainer is null) return;
-        if (_peersWithHeroes.Contains(peerId)) return;
+        if (_slotByPeer.ContainsKey(peerId)) return;
+
+        int slot = SpawnRing.NextFreeIndex(new HashSet<int>(_slotByPeer.Values));
+        Vector3 spawn = SpawnRing.PointFor(slot);
 
         var hero = _heroScene.Instantiate<Hero>();
 
@@ -176,30 +181,21 @@ public partial class NetworkManager : Node
         // Marked spawn=true in the replication config, so this initial placement
         // rides along with the spawn packet even though the CLIENT owns position
         // from here on.
-        Vector3 spawn = SpawnPointFor(_peersWithHeroes.Count);
         hero.NetPosition = spawn;
 
         // Server-side only, and never replicated: where this hero returns on death.
         hero.SpawnPoint = spawn;
 
-        _peersWithHeroes.Add(peerId);
+        _slotByPeer[peerId] = slot;
         _heroContainer.AddChild(hero, true);
-        GD.Print($"[net] spawned hero for peer {peerId} at {hero.NetPosition.Round()}");
+        GD.Print($"[net] spawned hero for peer {peerId} in slot {slot} at {hero.NetPosition.Round()}");
     }
 
     private void DespawnHeroFor(int peerId)
     {
         if (!IsServer || _heroContainer is null) return;
-        _peersWithHeroes.Remove(peerId);
+        _slotByPeer.Remove(peerId);
         _heroContainer.GetNodeOrNull(peerId.ToString())?.QueueFree();
-    }
-
-    private static Vector3 SpawnPointFor(int index)
-    {
-        // Ring around the arena centre, facing inward at the dummy.
-        const float radius = 10f;
-        float angle = Mathf.Tau * index / MaxPlayers;
-        return new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
     }
 
     // ---------------------------------------------------------------------

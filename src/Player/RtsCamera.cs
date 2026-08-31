@@ -117,10 +117,13 @@ public partial class RtsCamera : Node3D
     {
         var move = Vector2.Zero;
 
-        if (Input.IsKeyPressed(Key.W) || Input.IsKeyPressed(Key.Up))    move.Y += 1f;
-        if (Input.IsKeyPressed(Key.S) || Input.IsKeyPressed(Key.Down))  move.Y -= 1f;
-        if (Input.IsKeyPressed(Key.D) || Input.IsKeyPressed(Key.Right)) move.X += 1f;
-        if (Input.IsKeyPressed(Key.A) || Input.IsKeyPressed(Key.Left))  move.X -= 1f;
+        // Arrow keys only. WASD used to pan as well, which meant pressing W both
+        // cast the ability in slot 1 and shoved the camera -- QWER is the genre's
+        // ability row, so panning is what yields.
+        if (Input.IsKeyPressed(Key.Up))    move.Y += 1f;
+        if (Input.IsKeyPressed(Key.Down))  move.Y -= 1f;
+        if (Input.IsKeyPressed(Key.Right)) move.X += 1f;
+        if (Input.IsKeyPressed(Key.Left))  move.X -= 1f;
 
         if (EdgeScrollEnabled)
         {

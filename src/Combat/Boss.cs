@@ -19,7 +19,9 @@ public partial class Boss : Node3D, ICombatant
     [Export] public string DisplayName { get; set; } = "The Wipebringer";
 
     /// How long after a wipe or a kill before the encounter restarts, so you can
-    /// iterate without relaunching.
+    /// iterate without relaunching. Both paths genuinely use it now -- for a long
+    /// time only the kill did, and a wipe simply left the boss standing with its
+    /// health, phase and cooldowns intact for the respawning raid to run back into.
     [Export] public float ResetSeconds { get; set; } = 8f;
 
     /// Left empty, DefaultEncounter fills this in. Assign .tres phases here to
@@ -48,6 +50,10 @@ public partial class Boss : Node3D, ICombatant
     /// do nothing, rather than every ability needing to ask what it hit.
     public void Displace(Vector3 destination, float travelSeconds) { }
 
+    /// The boss resets itself through RestartEncounter; this exists so the reset
+    /// broadcast can be sent to every combatant without special-casing anything.
+    public void OnEncounterReset() { }
+
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
 
@@ -58,6 +64,11 @@ public partial class Boss : Node3D, ICombatant
     // what lets more than one be in flight at a time. ---
     private double _nextCastAt;
     private double _resetAt;
+    private double _wipeAt;
+
+    /// True once the fight has actually started. Distinguishes a wipe from the
+    /// perfectly ordinary state of nobody having joined the server yet.
+    private bool _engaged;
     private readonly Dictionary<Ability, double> _readyAt = new();
     private readonly RandomNumberGenerator _rng = new();
 
@@ -102,14 +113,33 @@ public partial class Boss : Node3D, ICombatant
 
         UpdatePhase();
 
+        // A wipe resets the encounter. Without this, players respawned after six
+        // seconds and ran back into a boss that had kept its health, its phase, its
+        // statuses and its cooldowns -- so a wipe cost nothing and meant nothing.
+        if (Combatants.Living(this, this, TargetFilter.Enemies).Count == 0)
+        {
+            if (!_engaged) return;
+
+            if (_wipeAt <= 0.0)
+            {
+                _wipeAt = now + ResetSeconds;
+                CombatDirector.Instance.CancelFor(this);
+                GD.Print($"[boss] raid wiped. Resetting in {ResetSeconds}s.");
+            }
+            else if (now >= _wipeAt)
+            {
+                RestartEncounter();
+            }
+
+            return;
+        }
+
+        _wipeAt = 0.0;
+
         // The director owns casts in flight. Asking it, rather than tracking a flag
         // here, is what makes overlapping mechanics a data change instead of a rewrite.
         if (CombatDirector.Instance.IsCasting(this)) return;
         if (now < _nextCastAt) return;
-
-        // Nothing to fight if nobody is alive to fight it. Without this the boss
-        // would keep casting into an empty arena on a dedicated server.
-        if (Combatants.Living(this, this, TargetFilter.Enemies).Count == 0) return;
 
         Ability next = PickAbility(now);
         if (next is not null) BeginCast(next, now);
@@ -179,6 +209,7 @@ public partial class Boss : Node3D, ICombatant
 
     private void BeginCast(Ability ability, double now)
     {
+        _engaged = true;
         _readyAt[ability] = now + ability.Cooldown;
 
         // Recovery is booked from the cast's end, not its start, so a long wind-up
@@ -220,10 +251,39 @@ public partial class Boss : Node3D, ICombatant
         PhaseIndex = 0;
         _readyAt.Clear();
         _nextCastAt = Now + 2.0;
+        _resetAt = 0.0;
+        _wipeAt = 0.0;
+        _engaged = false;
+        CombatDirector.Instance.CancelFor(this);
+        ReviveRaid();
         GD.Print($"[boss] {DisplayName} reset.");
     }
 
     // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// Wipe every trace of the previous session. Leaving and re-hosting used to
+    /// leave the boss on whatever health and phase it had when you left.
+    /// </summary>
+    public void ResetForNewSession()
+    {
+        _health.Fill();
+        _status.Clear();
+        PhaseIndex = 0;
+        _readyAt.Clear();
+        _nextCastAt = 0.0;
+        _resetAt = 0.0;
+        _wipeAt = 0.0;
+        _engaged = false;
+    }
+
+    /// <summary>Bring back everyone who died, wherever they died.</summary>
+    private void ReviveRaid()
+    {
+        foreach (Node node in GetTree().GetNodesInGroup(Combatants.GroupName))
+            if (node is ICombatant combatant && combatant.Team == Team.Players)
+                combatant.OnEncounterReset();
+    }
 
     private void UpdateLabel()
     {

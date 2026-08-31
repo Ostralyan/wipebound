@@ -17,6 +17,13 @@ public partial class Main : Node3D
 
         ApplyGridMaterial();
 
+        // godot --headless -- --selftest   (exits non-zero on failure, for CI)
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--selftest") >= 0)
+        {
+            GetTree().Quit(Dev.SelfTest.Run() == 0 ? 0 : 1);
+            return;
+        }
+
         NetworkManager.Instance.RegisterWorld(GetNode<Node>("Heroes"));
     }
 

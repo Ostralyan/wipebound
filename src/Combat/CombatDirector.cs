@@ -46,7 +46,31 @@ public partial class CombatDirector : Node
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
 
-    public override void _Ready() => Instance = this;
+    public override void _Ready()
+    {
+        Instance = this;
+        NetworkManager.Instance.ModeChanged += OnSessionBoundary;
+    }
+
+    /// <summary>
+    /// Hosting, joining or leaving ends whatever was happening.
+    ///
+    /// Session lifecycle was previously spread across NetworkManager, Boss and this
+    /// class with nobody owning the boundary, so stale casts and boss health
+    /// survived a leave-and-rehost. The director owns it because it is the one
+    /// thing that already knows about every cast in flight.
+    /// </summary>
+    private void OnSessionBoundary()
+    {
+        CancelAll();
+
+        foreach (Node node in GetTree().GetNodesInGroup(Boss.GroupName))
+            if (node is Boss boss) boss.ResetForNewSession();
+
+        foreach (Node node in GetTree().GetNodesInGroup(Combatants.GroupName))
+            if (node is ICombatant combatant && combatant.Team == Team.Players)
+                combatant.OnEncounterReset();
+    }
 
     public bool IsCasting(ICombatant caster)
     {

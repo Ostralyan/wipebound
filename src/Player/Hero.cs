@@ -24,13 +24,15 @@ public partial class Hero : CharacterBody3D, ICombatant
 {
     public const string GroupName = "hero";
 
+    /// Nothing legitimate is ever outside this, so claims beyond it are clamped.
+    public const float ArenaRadius = 46f;
+
     [ExportGroup("Movement")]
     [Export] public float MoveSpeed = 7.0f;
     [Export] public float TurnSpeed = 14.0f;
     [Export] public float ArriveDistance = 0.4f;
 
     [ExportGroup("Stats")]
-    [Export] public float RespawnSeconds = 6f;
     [Export] public float ManaRegenPerSecond = 7f;
 
     /// Left empty, PlayerKit fills this in. Assign abilities here to override.
@@ -127,7 +129,6 @@ public partial class Hero : CharacterBody3D, ICombatant
     // real cooldowns; the client's copies below are display state.
     private double[] _serverReadyAt = System.Array.Empty<double>();
     private double[] _clientReadyAt = System.Array.Empty<double>();
-    private double _respawnAt;
 
     /// While the server itself is moving this hero -- a knockback, a respawn --
     /// the client's reported position legitimately disagrees with the server's.
@@ -202,7 +203,6 @@ public partial class Hero : CharacterBody3D, ICombatant
         if (IsServer)
         {
             UpdateServerPosition(dt);
-            UpdateRespawn();
 
             _status.Tick(this, Now);
             _mana.RegenPerSecond = ManaRegenPerSecond * _status.ManaRegenMultiplier;
@@ -234,9 +234,8 @@ public partial class Hero : CharacterBody3D, ICombatant
         if (!IsAlive)
         {
             // Death clears everything: a slow that outlived you would apply to the
-            // hero that respawns, which is a different fight.
+            // hero that comes back, which is a different fight.
             _status.Clear();
-            _respawnAt = Now + RespawnSeconds;
             GD.Print($"[combat] {CombatName} died to {label}");
         }
     }
@@ -250,15 +249,20 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// ICombatant knockback entry point; see ServerPush for why it is a request.
     public void Displace(Vector3 destination, float travelSeconds) => ServerPush(destination, travelSeconds);
 
-    private void UpdateRespawn()
+    /// <summary>
+    /// Death lasts until the encounter resets. A timed respawn made a wipe cost
+    /// nothing -- and worse, players came back before the wipe reset could fire and
+    /// cancelled it, so the reset was unreachable in practice.
+    /// </summary>
+    public void OnEncounterReset()
     {
-        if (IsAlive || Now < _respawnAt) return;
+        if (!IsServer) return;
 
         _health.Fill();
         _mana.Fill();
         _status.Clear();
         ServerTeleport(SpawnPoint);
-        GD.Print($"[combat] hero {PeerId} respawned");
+        GD.Print($"[combat] {CombatName} revived");
     }
 
     // ---------------------------------------------------------------------
@@ -445,11 +449,11 @@ public partial class Hero : CharacterBody3D, ICombatant
             return;
         }
 
-        // Speed clamp. A client can claim to be anywhere; the server's copy can only
-        // chase that claim at a legal pace, so teleporting gains nothing that matters.
-        float budget = EffectiveMoveSpeed * 1.5f * dt + 0.05f;
-        Vector3 offset = NetPosition - ServerPosition;
-        ServerPosition += offset.Length() <= budget ? offset : offset.Normalized() * budget;
+        // MoveSync is an untrusted input channel exactly like CommandRouter, and is
+        // validated with the same discipline: garbage rejected, arena bounds
+        // enforced, and a per-tick budget with no additive slack.
+        ServerPosition = Untrusted.AdvanceValidatedPosition(
+            ServerPosition, NetPosition, EffectiveMoveSpeed, dt, ArenaRadius);
     }
 
     private void UpdateAppearance()

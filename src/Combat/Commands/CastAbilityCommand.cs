@@ -15,17 +15,30 @@ public sealed class CastAbilityCommand : ClientCommand
     private Vector3 _aimPoint;
     private Ability _ability;
 
+    /// Sanity bound so a hostile slot index cannot be used to probe anything.
+    private const int MaxSlot = 15;
+
     public override bool Read(Godot.Collections.Dictionary payload)
     {
-        if (!payload.ContainsKey("slot") || !payload.ContainsKey("aim")) return false;
+        if (!payload.TryGetValue("slot", out Variant rawSlot)) return false;
+        if (!payload.TryGetValue("aim", out Variant rawAim)) return false;
 
-        _slot = (int)payload["slot"];
-        _aimPoint = (Vector3)payload["aim"];
+        // Check the Variant TYPE before converting. Godot's conversions are lenient:
+        // casting a String to Vector3 does not throw, it quietly yields zero, which
+        // would turn a malformed payload into a perfectly valid cast at the origin.
+        if (rawSlot.VariantType != Variant.Type.Int) return false;
+        if (rawAim.VariantType != Variant.Type.Vector3) return false;
 
-        // A hostile client can put anything in here, including NaN, which would
-        // poison every distance test downstream.
-        return !float.IsNaN(_aimPoint.X) && !float.IsNaN(_aimPoint.Z)
-               && !float.IsInfinity(_aimPoint.X) && !float.IsInfinity(_aimPoint.Z);
+        _slot = (int)rawSlot;
+        _aimPoint = (Vector3)rawAim;
+
+        if (_slot < 0 || _slot > MaxSlot) return false;
+
+        // Every component, not just the two the footprint ends up using. Y was
+        // unchecked, and because DistanceTo consumes all three, a NaN there made the
+        // range comparison false while TelegraphArea later discarded Y -- so a
+        // modified client could land a ground-targeted ability anywhere on the map.
+        return Untrusted.IsFinite(_aimPoint);
     }
 
     public override bool Validate(CommandContext context, out string reason)

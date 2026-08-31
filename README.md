@@ -6,7 +6,7 @@ hotkey abilities, an RTS camera. Godot 4.7 (.NET / C#).
 A boss picks a mechanic, warns you with a shape on the ground, and hurts whoever
 is standing in it when the warning expires. That loop runs across the network,
 server-authoritative, with a shared clock. Bosses beyond the first, real player
-abilities, and art are not built yet.
+art are not built yet.
 
 ## Running it
 
@@ -79,8 +79,14 @@ damage." Every damage number is computed on the server from the server's own cop
 of the data, so a cheater editing shipped ability values changes their own UI and
 nothing else.
 
-`Hero.RequestCast` is the only `RpcMode.AnyPeer` method in the project. That is
-the entire attack surface, and it should stay small enough to audit by reading it.
+`CommandRouter.Submit` is the only `RpcMode.AnyPeer` method in the project apart
+from the clock's probe. That is the entire attack surface, and it stays small
+enough to audit by reading it however far the ability kit grows.
+
+The second untrusted channel is less obvious: a hero's own client writes
+`NetPosition` every tick through `MoveSync`. `Untrusted` holds the validation both
+channels pass through -- finite checks, arena bounds, and a purely multiplicative
+speed budget.
 
 ### 2. Authority is split per property, not per node
 
@@ -246,10 +252,21 @@ offset in the bottom left.
 
 ## Next
 
-- Player abilities beyond the placeholder `Q`, on the same intent-only RPC pattern.
 - Threat, so `NearestPlayer` targeting can become a real tank rule.
 - Adds, as a `SpawnEffect` — the loop already takes any effect you write.
 - Interrupt and cancellation, so a mechanic can be stopped mid-cast.
+
+## Tests
+
+```
+godot --headless -- --selftest
+```
+
+Exits non-zero on failure, so CI can gate on it. Covers the things that are silent
+when they break: telegraph geometry (which is duplicated in GLSL with nothing
+enforcing agreement, so this at least pins the C# side), status encoding and
+stacking, resource pools, command payload parsing against hostile input, and the
+movement speed budget.
 
 ## Transport
 
