@@ -31,7 +31,7 @@ godot -- --host --port 7788           # any of the above, on another port
 | Input | Does |
 | --- | --- |
 | Right-click | Move your hero there |
-| `Q` | Attack the boss (placeholder ability) |
+| `Q` `W` `E` `R` | Abilities: Strike, Lance, Aegis, Rupture |
 | `WASD` / arrows / middle-drag | Pan the camera |
 | Mouse wheel | Zoom |
 | `Space` | Re-lock the camera to your hero |
@@ -48,13 +48,21 @@ src/
     NetworkManager.cs    peer lifecycle, hero spawning, transport seam
     NetClock.cs          the shared timeline every peer agrees on
   Combat/
-    Boss.cs              the encounter loop: decide, warn, resolve, recover
-    BossAbility.cs       one mechanic, as data
+    ICombatant.cs        anything that can be hit; teams and target filters
+    ResourcePool.cs      health, mana, energy, rage -- one class, all data
+    Ability.cs           one ability, as data, whoever casts it
+    CombatDirector.cs    every cast in flight; telegraph, trailing edge, resolve
+    Boss.cs              encounter loop: phases, cooldowns, what to cast next
     BossPhase.cs         which mechanics are live, and how much rest between them
+    StatusEffect.cs      buff/debuff definition as a bag of modifiers
+    StatusTracker.cs     what is live on one combatant, and the wire form
+    StatusLibrary.cs     every status by id
     TelegraphArea.cs     the frozen footprint + the signed field that defines it
     TelegraphView.cs     the client-side drawing, and the shader that mirrors it
     DefaultEncounter.cs  the starting fight
-    Effects/             damage, soak, stack, knockback
+    PlayerKit.cs         what a hero can do
+    Effects/             damage, heal, soak, stack, knockback, apply status
+    Commands/            the single door clients speak through
   Player/
     Hero.tscn/.cs        click-to-move hero, split-authority synchronizers
     RtsCamera.cs         fixed-angle pan/follow camera + mouse-to-ground raycast
@@ -105,6 +113,38 @@ would look like cheating, or hand a cheater a free window.
 "a headless box hosts" is a launch flag, not a refactor. Worth knowing: whoever
 hosts *is* the authority and can cheat undetectably. Server authority means the
 other players can't.
+
+## How combat is put together
+
+Four ideas carry the whole system, and it is worth knowing which is which.
+
+**Abilities are data, not classes.** `Ability` is one Resource -- footprint,
+wind-up, cost, consequences -- and the same type whether a boss or a player casts
+it. A boss mechanic and a player spell differ only in where the aim point comes
+from. Adding a mechanic is a new record, never a new subclass.
+
+**Consequences are a list of interchangeable effects.** `AbilityEffect` is the
+Strategy in the codebase: damage, heal, soak, stack, knockback, apply-status. An
+ability owning a *list* of them is the difference between a dodge-em-up and a co-op
+game, because damage alone only ever asks "did you move?" while soak and stack ask
+players to agree with each other.
+
+**Statuses are a bag of modifiers, deliberately not a hierarchy.** Buffs compose --
+a haste and a slow and a shield are all live at once and their numbers multiply --
+and modelling that polymorphically means every pair of buff types has to know about
+the other. Behaviour over time is the one thing a bag cannot express, so periodic
+effects reuse `AbilityEffect`: a damage-over-time is a `DamageEffect` on a one
+second interval. One Strategy hierarchy, not two.
+
+**Client intent is a command.** Every request a client can make arrives at
+`CommandRouter.Submit`, the only `RpcMode.AnyPeer` entry point in the game outside
+the clock. Growing the kit does not grow the attack surface, and sender resolution,
+rate limiting and the audit log are written once rather than per verb. There is no
+undo and there never will be -- that is not why the pattern is here.
+
+Statuses replicate, and not only for the HUD: hero movement is client-authoritative,
+so a client that does not know it is slowed keeps running at full speed and the
+server's clamp drags it back, which reads as rubber banding.
 
 ## The encounter loop
 

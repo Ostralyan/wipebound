@@ -157,6 +157,41 @@ max_value = 1.0
 step = 0.001
 show_percentage = false
 
+[node name="PlayerFrame" type="VBoxContainer" parent="UI/Hud"]
+mouse_filter = 2
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -300.0
+offset_top = -132.0
+offset_right = 300.0
+offset_bottom = -14.0
+grow_horizontal = 2
+grow_vertical = 0
+theme_override_constants/separation = 4
+
+[node name="Buffs" type="HBoxContainer" parent="UI/Hud/PlayerFrame"]
+mouse_filter = 2
+alignment = 1
+theme_override_constants/separation = 14
+
+[node name="HeroHealth" type="ProgressBar" parent="UI/Hud/PlayerFrame"]
+mouse_filter = 2
+custom_minimum_size = Vector2(0, 16)
+show_percentage = false
+
+[node name="HeroMana" type="ProgressBar" parent="UI/Hud/PlayerFrame"]
+mouse_filter = 2
+modulate = Color(0.55, 0.72, 1, 1)
+custom_minimum_size = Vector2(0, 10)
+show_percentage = false
+
+[node name="Abilities" type="HBoxContainer" parent="UI/Hud/PlayerFrame"]
+mouse_filter = 2
+alignment = 1
+theme_override_constants/separation = 8
+
 [node name="NetDebug" type="Label" parent="UI/Hud"]
 mouse_filter = 2
 modulate = Color(1, 1, 1, 0.65)
@@ -207,4 +242,4 @@ autowrap_mode = 3
 
 [node name="Help" type="Label" parent="UI/Lobby/Margin/Rows"]
 modulate = Color(1, 1, 1, 0.6)
-text = "Right-click: move\nQ: attack the boss\nWASD / middle-drag: pan\nWheel: zoom    Space: recenter"
+text = "Right-click: move\nQ W E R: abilities\nWASD / middle-drag: pan\nWheel: zoom    Space: recenter"

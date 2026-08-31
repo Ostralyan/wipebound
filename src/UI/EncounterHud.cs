@@ -1,61 +1,109 @@
 using Godot;
+using System.Collections.Generic;
 using Wipebound.Combat;
 using Wipebound.Net;
+using Wipebound.Player;
 
 namespace Wipebound.UI;
 
 /// <summary>
-/// Boss health, phase, and the cast bar.
+/// Boss frame, cast bar, and the local player's vitals, ability slots and buffs.
 ///
-/// The cast bar is driven from the same absolute server timestamps the telegraph
-/// uses, so the bar on screen and the circle on the ground always finish together.
-/// Deriving it from a local countdown would let them drift apart, and players
-/// would learn to trust whichever one happened to be right.
+/// The cast bar is driven from the same absolute server timestamps as the
+/// telegraph, so the bar and the circle on the ground always finish together.
+/// Deriving it from a local countdown would let them drift and players would
+/// learn to trust whichever happened to be right.
+///
+/// Ability slots are built from the hero's kit at runtime rather than laid out in
+/// the scene, so adding a fifth ability is a data change and not a scene edit.
 /// </summary>
 public partial class EncounterHud : Control
 {
+    private static readonly string[] SlotKeys = { "Q", "W", "E", "R", "1", "2" };
+
+    private sealed class SlotView
+    {
+        public PanelContainer Root;
+        public Label Title;
+        public ProgressBar Cooldown;
+    }
+
+    // Boss frame
     private Label _bossName;
     private Label _castLabel;
-    private Label _netDebug;
     private ProgressBar _bossHealth;
     private ProgressBar _castBar;
 
+    // Player frame
+    private Control _playerFrame;
+    private ProgressBar _heroHealth;
+    private ProgressBar _heroMana;
+    private HBoxContainer _abilityRow;
+    private HBoxContainer _buffRow;
+
+    private Label _netDebug;
+
     private Boss _boss;
+    private Hero _hero;
+    private readonly List<SlotView> _slots = new();
+    private readonly List<Label> _buffLabels = new();
+
     private double _castStart;
     private double _castEnd;
     private bool _casting;
 
     public override void _Ready()
     {
-        CombatDirector.Instance.CastStarted += OnCastStarted;
-
         _bossName = GetNode<Label>("Encounter/BossName");
         _bossHealth = GetNode<ProgressBar>("Encounter/BossHealth");
         _castLabel = GetNode<Label>("Encounter/CastLabel");
         _castBar = GetNode<ProgressBar>("Encounter/CastBar");
+
+        _playerFrame = GetNode<Control>("PlayerFrame");
+        _buffRow = GetNode<HBoxContainer>("PlayerFrame/Buffs");
+        _heroHealth = GetNode<ProgressBar>("PlayerFrame/HeroHealth");
+        _heroMana = GetNode<ProgressBar>("PlayerFrame/HeroMana");
+        _abilityRow = GetNode<HBoxContainer>("PlayerFrame/Abilities");
+
         _netDebug = GetNode<Label>("NetDebug");
+
+        CombatDirector.Instance.CastStarted += OnCastStarted;
+        NetworkManager.Instance.LocalHeroReady += OnLocalHeroReady;
+
+        _playerFrame.Visible = false;
+    }
+
+    private void OnLocalHeroReady(Node3D node)
+    {
+        if (node is not Hero hero) return;
+
+        _hero = hero;
+        BuildAbilitySlots();
+        _playerFrame.Visible = true;
     }
 
     public override void _Process(double delta)
     {
         if (_boss is null || !IsInstanceValid(_boss)) TryBindBoss();
 
+        double now = NetClock.Instance.ServerTime;
         UpdateBoss();
-        UpdateCast();
+        UpdateCast(now);
+        UpdatePlayer(now);
         UpdateNetDebug();
     }
 
+    // -- boss ------------------------------------------------------------
+
     private void TryBindBoss()
     {
-        if (GetTree().GetFirstNodeInGroup(Boss.GroupName) is not Boss boss) return;
-
-        _boss = boss;
+        if (GetTree().GetFirstNodeInGroup(Boss.GroupName) is Boss boss) _boss = boss;
     }
 
     private void OnCastStarted(int casterTeam, string casterName, string label,
                                double startTime, double endTime, Color color)
     {
-        // The boss frame shows boss casts. A player's own cast bar is their business.
+        // The boss frame shows boss casts. A player's own cast is their business.
         if ((Team)casterTeam != Team.Enemies) return;
 
         _castLabel.Text = label;
@@ -82,21 +130,130 @@ public partial class EncounterHud : Control
         _bossHealth.Value = _boss.Health;
     }
 
-    private void UpdateCast()
+    private void UpdateCast(double now)
     {
         _castLabel.Visible = _casting;
         _castBar.Visible = _casting;
         if (!_casting) return;
 
-        double now = NetClock.Instance.ServerTime;
         double span = Mathf.Max(_castEnd - _castStart, 0.0001);
-
         _castBar.MaxValue = 1.0;
         _castBar.Value = Mathf.Clamp((now - _castStart) / span, 0.0, 1.0);
 
         // Linger briefly past the deadline so the resolve is legible.
         if (now > _castEnd + 0.4) _casting = false;
     }
+
+    // -- player ----------------------------------------------------------
+
+    private void BuildAbilitySlots()
+    {
+        foreach (Node child in _abilityRow.GetChildren()) child.QueueFree();
+        _slots.Clear();
+
+        for (int i = 0; i < _hero.Kit.Count; i++)
+        {
+            Ability ability = _hero.Kit[i];
+
+            var panel = new PanelContainer
+            {
+                CustomMinimumSize = new Vector2(124, 46),
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+
+            var rows = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+
+            var title = new Label
+            {
+                Text = $"[{(i < SlotKeys.Length ? SlotKeys[i] : "?")}]  {ability.DisplayName}",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+
+            var cooldown = new ProgressBar
+            {
+                MaxValue = 1.0,
+                Step = 0.001,
+                ShowPercentage = false,
+                CustomMinimumSize = new Vector2(0, 6),
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+
+            rows.AddChild(title);
+            rows.AddChild(cooldown);
+            panel.AddChild(rows);
+            _abilityRow.AddChild(panel);
+
+            _slots.Add(new SlotView { Root = panel, Title = title, Cooldown = cooldown });
+        }
+    }
+
+    private void UpdatePlayer(double now)
+    {
+        if (_hero is null || !IsInstanceValid(_hero))
+        {
+            _playerFrame.Visible = false;
+            return;
+        }
+
+        _heroHealth.MaxValue = _hero.HealthMax;
+        _heroHealth.Value = _hero.Health;
+        _heroMana.MaxValue = _hero.ManaMax;
+        _heroMana.Value = _hero.Mana;
+
+        bool silenced = _hero.Status.Silenced;
+
+        for (int i = 0; i < _slots.Count; i++)
+        {
+            SlotView slot = _slots[i];
+            Ability ability = _hero.AbilityAt(i);
+            if (ability is null) continue;
+
+            float remaining = _hero.CooldownFraction(i, now);
+            slot.Cooldown.Value = remaining;
+
+            bool usable = remaining <= 0f
+                          && _hero.ManaPool.CanAfford(ability.ManaCost)
+                          && !silenced
+                          && _hero.IsAlive;
+
+            slot.Root.Modulate = usable ? Colors.White : new Color(1f, 1f, 1f, 0.38f);
+        }
+
+        UpdateBuffs(now);
+    }
+
+    private void UpdateBuffs(double now)
+    {
+        IReadOnlyList<ActiveStatus> active = _hero.Status.Active;
+
+        for (int i = 0; i < active.Count; i++)
+        {
+            Label label = i < _buffLabels.Count ? _buffLabels[i] : NewBuffLabel();
+            ActiveStatus status = active[i];
+
+            label.Text = status.Stacks > 1
+                ? $"{status.Definition.DisplayName} x{status.Stacks}  {status.RemainingAt(now):0.0}s"
+                : $"{status.Definition.DisplayName}  {status.RemainingAt(now):0.0}s";
+
+            label.Modulate = status.Definition.Tint;
+            label.Visible = true;
+        }
+
+        // Pooled rather than rebuilt, because this runs every frame.
+        for (int i = active.Count; i < _buffLabels.Count; i++)
+            _buffLabels[i].Visible = false;
+    }
+
+    private Label NewBuffLabel()
+    {
+        var label = new Label { MouseFilter = MouseFilterEnum.Ignore };
+        _buffRow.AddChild(label);
+        _buffLabels.Add(label);
+        return label;
+    }
+
+    // -- diagnostics -----------------------------------------------------
 
     private void UpdateNetDebug()
     {
