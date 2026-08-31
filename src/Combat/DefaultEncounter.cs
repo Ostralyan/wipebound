@@ -63,6 +63,7 @@ public static class DefaultEncounter
             {
                 new DamageEffect { Amount = 30f },
                 new KnockbackEffect { Distance = 9f, TravelSeconds = 0.35f },
+                new ApplyStatusEffect { StatusId = StatusLibrary.Crippled },
             },
         };
 

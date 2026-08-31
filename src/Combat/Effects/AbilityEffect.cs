@@ -12,7 +12,11 @@ public sealed class EffectContext
     /// effects can tell friend from foe without being told.
     public required ICombatant Caster { get; init; }
 
-    public required TelegraphArea Area { get; init; }
+    /// Optional: periodic status ticks resolve effects with no footprint at all.
+    public TelegraphArea Area { get; init; }
+
+    /// Server-clock time of this resolution. Statuses need it to date their expiry.
+    public double Now { get; init; }
 
     /// Living, affectable combatants whose server position fell inside the area.
     public required IReadOnlyList<ICombatant> Targets { get; init; }

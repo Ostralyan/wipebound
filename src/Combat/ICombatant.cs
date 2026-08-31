@@ -41,6 +41,11 @@ public interface ICombatant
     bool IsAlive { get; }
     ResourcePool HealthPool { get; }
 
+    /// Timed modifiers currently applied. Server-authoritative, replicated for the
+    /// HUD and -- because hero movement is client-authoritative -- so a slowed
+    /// client knows it is slowed.
+    StatusTracker Status { get; }
+
     /// For lifetime checks and rendering. Combatants are always nodes.
     Node3D Node { get; }
 
@@ -81,6 +86,18 @@ public static class Combatants
         }
 
         return found;
+    }
+
+    /// <summary>
+    /// The one place outgoing and incoming modifiers are combined. Both ApplyDamage
+    /// implementations call it, so an effect can never forget to apply a
+    /// vulnerability or a shield -- it never sees the final number at all.
+    /// </summary>
+    public static float ScaleDamage(float amount, ICombatant source, ICombatant target)
+    {
+        float outgoing = source?.Status?.DamageDealtMultiplier ?? 1f;
+        float incoming = target?.Status?.DamageTakenMultiplier ?? 1f;
+        return amount * outgoing * incoming;
     }
 
     public static ICombatant ByDistance(IReadOnlyList<ICombatant> from, Vector3 origin, bool nearest)

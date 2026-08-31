@@ -30,6 +30,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     [ExportGroup("Stats")]
     [Export] public float RespawnSeconds = 6f;
+    [Export] public float ManaRegenPerSecond = 7f;
 
     [ExportGroup("Attack (placeholder for the real ability system)")]
     [Export] public float ZapCooldown = 1.0f;
@@ -46,9 +47,16 @@ public partial class Hero : CharacterBody3D, ICombatant
     // replicated directly; exposing [Export] scalars over it keeps the synchronizer
     // working while the logic lives somewhere testable.
     private readonly ResourcePool _health = new(100f);
+    private readonly ResourcePool _mana = new(100f);
+    private readonly StatusTracker _status = new();
 
     [Export] public float Health { get => _health.Current; set => _health.Current = value; }
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
+    [Export] public float Mana { get => _mana.Current; set => _mana.Current = value; }
+    [Export] public float ManaMax { get => _mana.Max; set => _mana.Max = value; }
+
+    /// The whole status set as one small string. See StatusTracker for why a string.
+    [Export] public string StatusPayload { get => _status.Encoded; set => _status.Decode(value); }
 
     /// The peer that owns this hero, carried by the node's name (see NetworkManager).
     public int PeerId { get; private set; }
@@ -60,7 +68,16 @@ public partial class Hero : CharacterBody3D, ICombatant
     public Team Team => Team.Players;
     public bool IsAlive => !_health.IsEmpty;
     public ResourcePool HealthPool => _health;
+    public ResourcePool ManaPool => _mana;
+    public StatusTracker Status => _status;
     public Node3D Node => this;
+
+    /// <summary>
+    /// Move speed after buffs. Both the client (to move) and the server (to size the
+    /// speed clamp) read this, and they agree because statuses replicate. The clamp's
+    /// 1.5x margin covers the brief window where a status update is still in flight.
+    /// </summary>
+    public float EffectiveMoveSpeed => _status.Rooted ? 0f : MoveSpeed * _status.MoveSpeedMultiplier;
 
     /// <summary>
     /// What the SERVER believes, which is the speed-clamped copy rather than the
@@ -155,7 +172,11 @@ public partial class Hero : CharacterBody3D, ICombatant
             AlbedoColor = IsLocalPlayer ? new Color("4ade80") : new Color("94a3b8"),
         };
 
-        if (IsServer) _health.Fill();
+        if (IsServer)
+        {
+            _health.Fill();
+            _mana.Fill();
+        }
 
         if (IsLocalPlayer)
         {
@@ -176,6 +197,15 @@ public partial class Hero : CharacterBody3D, ICombatant
         {
             UpdateServerPosition(dt);
             UpdateRespawn();
+
+            _status.Tick(this, Now);
+            _mana.RegenPerSecond = ManaRegenPerSecond * _status.ManaRegenMultiplier;
+            _mana.Tick(dt);
+        }
+        else
+        {
+            // Drop what has visibly ended so the buff bar stays honest between updates.
+            _status.PruneForDisplay(Now);
         }
 
         UpdateAppearance();
@@ -193,10 +223,13 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(amount);
+        _health.Drain(Combatants.ScaleDamage(amount, source, this));
 
         if (!IsAlive)
         {
+            // Death clears everything: a slow that outlived you would apply to the
+            // hero that respawns, which is a different fight.
+            _status.Clear();
             _respawnAt = Now + RespawnSeconds;
             GD.Print($"[combat] {CombatName} died to {label}");
         }
@@ -216,6 +249,8 @@ public partial class Hero : CharacterBody3D, ICombatant
         if (IsAlive || Now < _respawnAt) return;
 
         _health.Fill();
+        _mana.Fill();
+        _status.Clear();
         ServerTeleport(SpawnPoint);
         GD.Print($"[combat] hero {PeerId} respawned");
     }
@@ -312,7 +347,8 @@ public partial class Hero : CharacterBody3D, ICombatant
 
             if (dir != Vector3.Zero)
             {
-                Velocity = new Vector3(dir.X * MoveSpeed, 0f, dir.Z * MoveSpeed);
+                float speed = EffectiveMoveSpeed;
+                Velocity = new Vector3(dir.X * speed, 0f, dir.Z * speed);
 
                 // Godot's forward is -Z, so the yaw that points -Z along dir is this.
                 float wanted = Mathf.Atan2(-dir.X, -dir.Z);
@@ -405,7 +441,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         // Speed clamp. A client can claim to be anywhere; the server's copy can only
         // chase that claim at a legal pace, so teleporting gains nothing that matters.
-        float budget = MoveSpeed * 1.5f * dt + 0.05f;
+        float budget = EffectiveMoveSpeed * 1.5f * dt + 0.05f;
         Vector3 offset = NetPosition - ServerPosition;
         ServerPosition += offset.Length() <= budget ? offset : offset.Normalized() * budget;
     }

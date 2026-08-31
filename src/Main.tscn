@@ -51,6 +51,9 @@ properties/1/replication_mode = 2
 properties/2/path = NodePath(".:HealthMax")
 properties/2/spawn = true
 properties/2/replication_mode = 2
+properties/3/path = NodePath(".:StatusPayload")
+properties/3/spawn = true
+properties/3/replication_mode = 2
 
 [node name="Main" type="Node3D"]
 script = ExtResource("1_main")

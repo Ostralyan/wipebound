@@ -33,10 +33,12 @@ public partial class Boss : Node3D, ICombatant
 
     // --- Replicated by StatsSync. Authority: the server. ---
     private readonly ResourcePool _health = new(4000f);
+    private readonly StatusTracker _status = new();
 
     [Export] public float Health { get => _health.Current; set => _health.Current = value; }
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
     [Export] public int PhaseIndex { get; set; }
+    [Export] public string StatusPayload { get => _status.Encoded; set => _status.Decode(value); }
 
     /// Fires on every peer the moment a telegraph appears, so the HUD can draw a
     /// cast bar without knowing anything about the encounter.
@@ -48,6 +50,7 @@ public partial class Boss : Node3D, ICombatant
     public Vector3 CombatPosition => GlobalPosition;
     public bool IsAlive => !_health.IsEmpty;
     public ResourcePool HealthPool => _health;
+    public StatusTracker Status => _status;
     public Node3D Node => this;
 
     /// Bosses are anchored. Knockback effects are safe to point at one; they simply
@@ -93,9 +96,14 @@ public partial class Boss : Node3D, ICombatant
     {
         UpdateLabel();
 
-        if (!IsServer) return;
+        if (!IsServer)
+        {
+            _status.PruneForDisplay(Now);
+            return;
+        }
 
         double now = Now;
+        _status.Tick(this, now);
 
         if (!IsAlive)
         {
@@ -269,6 +277,7 @@ public partial class Boss : Node3D, ICombatant
             Area = _area,
             Targets = targets,
             Candidates = candidates,
+            Now = now,
         };
 
         foreach (AbilityEffect effect in ability.Effects)
@@ -287,7 +296,7 @@ public partial class Boss : Node3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(amount);
+        _health.Drain(Combatants.ScaleDamage(amount, source, this));
 
         if (IsAlive) return;
 
@@ -305,6 +314,7 @@ public partial class Boss : Node3D, ICombatant
     private void RestartEncounter()
     {
         _health.Fill();
+        _status.Clear();
         PhaseIndex = 0;
         _readyAt.Clear();
         _casting = null;
