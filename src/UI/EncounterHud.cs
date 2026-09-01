@@ -19,7 +19,14 @@ namespace Wipebound.UI;
 /// </summary>
 public partial class EncounterHud : Control
 {
-    private static readonly string[] SlotKeys = { "Q", "W", "E", "R", "1", "2" };
+    /// The keycap is asked of the InputMap, never assumed. A hard-coded row was
+    /// fine while the keys were hard-coded too; now that players can remap them,
+    /// a fixed label is just a lie printed on the button.
+    private static string SlotKey(int slot)
+    {
+        string cap = Player.Bindings.Keycap(Player.Bindings.Ability(slot));
+        return cap.Length > 0 ? cap : "--";
+    }
 
     private sealed class SlotView
     {
@@ -184,7 +191,7 @@ public partial class EncounterHud : Control
 
             var title = new Label
             {
-                Text = $"[{(i < SlotKeys.Length ? SlotKeys[i] : "?")}]  {ability.DisplayName}",
+                Text = $"[{SlotKey(i)}]  {ability.DisplayName}",
                 HorizontalAlignment = HorizontalAlignment.Center,
                 MouseFilter = MouseFilterEnum.Ignore,
             };

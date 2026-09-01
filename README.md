@@ -1,7 +1,7 @@
 # Wipebound
 
-Co-op PvE boss encounters with Warcraft-style controls: right-click to move,
-hotkey abilities, an RTS camera. Godot 4.7 (.NET / C#).
+Co-op PvE boss encounters: WASD movement, cursor aiming, quick-cast abilities,
+an RTS camera. Godot 4.7 (.NET / C#).
 
 A boss picks a mechanic, warns you with a shape on the ground, and hurts whoever
 is standing in it when the warning expires. That loop runs across the network,
@@ -30,13 +30,26 @@ godot -- --host --port 7788           # any of the above, on another port
 
 | Input | Does |
 | --- | --- |
-| Right-click | Move your hero there |
-| `Q` `W` `E` `R` | Abilities, which differ by class |
+| `W` `A` `S` `D` | Move, relative to the screen rather than to the world |
+| Mouse | Aim. Everything is aimed, including heals -- there is no selected target |
+| `LMB` `RMB` `Q` `E` `R` `F` | The six rotational abilities |
+| `1` `2` `3` | The three situational tools |
+| `Space` `C` | The two defensive cooldowns |
+| `X` | Ultimate |
 | Arrow keys / middle-drag | Pan the camera |
 | Mouse wheel | Zoom |
-| `Space` | Re-lock the camera to your hero |
+| `Home` | Re-lock the camera to your hero |
 
-Panning is deliberately not on WASD: `W` is the slot 2 ability.
+Every one of those is rebindable. Nothing in the game reads a raw key: input goes
+through named actions, so the settings screen and the test that proves no key does
+two jobs both see the whole surface. Bindings save to `user://controls.cfg`.
+
+Defaults are stored as *physical* keycodes, so WASD is the same shape under the
+hand on AZERTY and QWERTZ rather than the same three letters.
+
+Kits are twelve buttons in four groups -- six rotational, three situational, two
+defensive, one ultimate -- and the self-test enforces both the counts and the
+cooldown band each group implies, so a kit cannot quietly become twelve nukes.
 
 Edge scrolling is off by default -- with two windows on one monitor it fires
 constantly. Turn it on in the `RtsCamera` inspector when you play fullscreen.

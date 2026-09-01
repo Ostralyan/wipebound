@@ -63,7 +63,14 @@ public static class ContentHash
 
         // Statuses are balance too: a vulnerability multiplier or a shield size
         // changes a fight as surely as a damage number does.
-        foreach (StatusEffect status in StatusLibrary.All) Append(builder, status, 0, path);
+        //
+        // Sorted by id, because the registry hands them back in Dictionary order
+        // and .NET does not promise what that is. Two builds of identical content
+        // must produce identical bytes here or honest players get refused, which
+        // is the same failure as formatting numbers in the ambient locale.
+        var statuses = new List<StatusEffect>(StatusLibrary.All);
+        statuses.Sort(static (a, b) => string.CompareOrdinal(a.Id, b.Id));
+        foreach (StatusEffect status in statuses) Append(builder, status, 0, path);
 
         AppendTunedScenes(builder);
         AppendConstants(builder);

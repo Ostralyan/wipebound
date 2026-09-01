@@ -8,6 +8,11 @@ public partial class Main : Node3D
 {
     public override void _Ready()
     {
+        // Before anything can read an action. Heroes poll movement and abilities
+        // through Bindings every physics frame, and Input.GetVector on an action
+        // that was never registered is an error rather than a zero.
+        Player.Bindings.Install();
+
         // Synchronous bake so the navmesh is ready before heroes probe for it.
         // Anything you add as a child of NavRegion becomes part of the walkable
         // solve -- drop obstacle meshes in there and heroes start pathing around them.

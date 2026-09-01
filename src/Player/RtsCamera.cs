@@ -115,15 +115,12 @@ public partial class RtsCamera : Node3D
 
     private Vector3 ReadPanInput()
     {
-        var move = Vector2.Zero;
-
-        // Arrow keys only. WASD used to pan as well, which meant pressing W both
-        // cast the ability in slot 1 and shoved the camera -- QWER is the genre's
-        // ability row, so panning is what yields.
-        if (Input.IsKeyPressed(Key.Up))    move.Y += 1f;
-        if (Input.IsKeyPressed(Key.Down))  move.Y -= 1f;
-        if (Input.IsKeyPressed(Key.Right)) move.X += 1f;
-        if (Input.IsKeyPressed(Key.Left))  move.X -= 1f;
+        // Read as actions, not raw keys. A raw key here is invisible to the
+        // rebinding screen AND to the test that proves no key does two jobs --
+        // which is exactly how Space came to both re-lock the camera and cast a
+        // defensive ability once the kit grew onto the spacebar.
+        Vector2 move = Input.GetVector(
+            Bindings.CameraLeft, Bindings.CameraRight, Bindings.CameraDown, Bindings.CameraUp);
 
         if (EdgeScrollEnabled)
         {
@@ -158,10 +155,9 @@ public partial class RtsCamera : Node3D
                 _focus += (-GroundRight * motion.Relative.X + GroundForward * motion.Relative.Y)
                           * (Distance * 0.0022f);
                 break;
-            case InputEventKey { Pressed: true, Echo: false, Keycode: Key.Space }:
-                LockedToHero = true;
-                break;
         }
+
+        if (@event.IsActionPressed(Bindings.CameraRecenter)) LockedToHero = true;
     }
 
     /// <summary>
@@ -171,6 +167,34 @@ public partial class RtsCamera : Node3D
     /// machinery rather than a convenience. A flat arena makes the maths exact and
     /// free; swap in a physics raycast once the ground has height.
     /// </summary>
+    /// <summary>
+    /// The screen's own forward and right, flattened to the ground.
+    ///
+    /// WASD is read through this rather than through world axes because the rig
+    /// is yawed 45 degrees: "up the screen" is not -Z, and a player pressing W
+    /// expects to walk up the screen. Taken from the live Camera3D rather than
+    /// this node's yaw export so it stays correct if the rig is ever rotated.
+    /// </summary>
+    public static bool GroundBasis(Node context, out Vector3 forward, out Vector3 right)
+    {
+        forward = Vector3.Forward;
+        right = Vector3.Right;
+
+        Camera3D camera = context.GetViewport()?.GetCamera3D();
+        if (camera is null) return false;
+
+        Basis basis = camera.GlobalTransform.Basis;
+        var flatForward = new Vector3(-basis.Z.X, 0f, -basis.Z.Z);
+        var flatRight = new Vector3(basis.X.X, 0f, basis.X.Z);
+
+        // Looking straight down leaves no forward in the ground plane.
+        if (flatForward.LengthSquared() < 0.0001f || flatRight.LengthSquared() < 0.0001f) return false;
+
+        forward = flatForward.Normalized();
+        right = flatRight.Normalized();
+        return true;
+    }
+
     public static bool MouseGroundPoint(Node context, out Vector3 point)
     {
         point = Vector3.Zero;

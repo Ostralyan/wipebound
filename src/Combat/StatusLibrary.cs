@@ -28,9 +28,39 @@ public static class StatusLibrary
     public const string Silenced = "silenced";
     public const string Detonation = "detonation";
     public const string Hunted = "hunted";
+    public const string Bastion = "bastion";
+    public const string Empowered = "empowered";
+    public const string Rejuvenating = "rejuvenating";
 
     static StatusLibrary()
     {
+        // The defensive-slot shield. Warded is what a rotational button hands
+        // out; this is what a 60-second cooldown buys, and the gap between the
+        // two numbers is the reason both slots exist.
+        Register(new StatusEffect
+        {
+            Id = Bastion, DisplayName = "Bastion", Duration = 8f,
+            Beneficial = true, Tint = new Color("818cf8"),
+            AbsorbAmount = 220f,
+        });
+
+        Register(new StatusEffect
+        {
+            Id = Empowered, DisplayName = "Empowered", Duration = 10f,
+            Beneficial = true, Tint = new Color("fbbf24"),
+            DamageDealtMultiplier = 1.5f,
+        });
+
+        // Healing over time rather than a lump: it rewards pre-casting before the
+        // damage lands instead of reacting after it.
+        Register(new StatusEffect
+        {
+            Id = Rejuvenating, DisplayName = "Rejuvenating", Duration = 9f,
+            Beneficial = true, Tint = new Color("4ade80"),
+            TickInterval = 1.5f,
+            OnTick = new Godot.Collections.Array<AbilityEffect> { new HealEffect { Amount = 14f } },
+        });
+
         Register(new StatusEffect
         {
             Id = Crippled, DisplayName = "Crippled", Duration = 4f,

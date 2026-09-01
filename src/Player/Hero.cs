@@ -37,7 +37,6 @@ public partial class Hero : CharacterBody3D, ICombatant
     [ExportGroup("Movement")]
     [Export] public float MoveSpeed = 7.0f;
     [Export] public float TurnSpeed = 14.0f;
-    [Export] public float ArriveDistance = 0.4f;
 
     [ExportGroup("Stats")]
     [Export] public float ManaRegenPerSecond = 7f;
@@ -145,14 +144,9 @@ public partial class Hero : CharacterBody3D, ICombatant
     private static double Now => NetClock.Instance.ServerTime;
 
     private MultiplayerSynchronizer _statsSync;
-    private NavigationAgent3D _agent;
     private Label3D _label;
     private MeshInstance3D _body;
     private MeshInstance3D _nose;
-    private Vector3 _moveTarget;
-    private bool _hasTarget;
-    private bool _useNavigation;
-    private int _navProbeFrames;
 
     // Server-only. Never replicated, never accepted from a client. These are the
     // real cooldowns; the client's copies below are display state.
@@ -197,7 +191,6 @@ public partial class Hero : CharacterBody3D, ICombatant
         _clientCooldowns.Resize(Kit.Count);
 
         _statsSync = GetNode<MultiplayerSynchronizer>("StatsSync");
-        _agent = GetNode<NavigationAgent3D>("NavAgent");
         _label = GetNode<Label3D>("NameLabel");
         _body = GetNode<MeshInstance3D>("Body");
         _nose = GetNode<MeshInstance3D>("Nose");
@@ -207,7 +200,6 @@ public partial class Hero : CharacterBody3D, ICombatant
         GlobalPosition = SpawnPoint;
         NetPosition = SpawnPoint;
         _movement.Reset(SpawnPoint);
-        _moveTarget = SpawnPoint;
 
         _body.MaterialOverride = new StandardMaterial3D
         {
@@ -230,7 +222,6 @@ public partial class Hero : CharacterBody3D, ICombatant
     public override void _PhysicsProcess(double delta)
     {
         float dt = (float)delta;
-        ProbeNavigation();
 
         if (IsLocalPlayer) DriveLocally(dt);
         else               InterpolateRemote(dt);
@@ -362,8 +353,6 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         GlobalPosition = destination;
         NetPosition = destination;
-        _moveTarget = destination;
-        _hasTarget = false;
         _pushing = false;
     }
 
@@ -377,7 +366,6 @@ public partial class Hero : CharacterBody3D, ICombatant
         _pushStart = Now;
         _pushEnd = _pushStart + travelSeconds;
         _pushing = true;
-        _hasTarget = false;
     }
 
     // ---------------------------------------------------------------------
@@ -385,19 +373,23 @@ public partial class Hero : CharacterBody3D, ICombatant
     // ---------------------------------------------------------------------
 
     /// <summary>
-    /// Use the navigation mesh if the arena baked one, otherwise walk in a straight
-    /// line. The fallback keeps an empty arena playable; the moment you add obstacle
-    /// meshes under NavRegion and they bake, pathfinding takes over with no code change.
+    /// Walk where the keys say, in the direction the SCREEN faces.
+    ///
+    /// Camera-relative, not world-relative: the rig sits at a fixed 45-degree
+    /// yaw, so mapping W to world -Z would send you diagonally away from the way
+    /// you pressed. W means "up the screen" and nothing else.
+    ///
+    /// Input.GetVector clamps the stick to length 1, which is doing real safety
+    /// work here and not just feel. A raw W+D sum is 1.41 long, and since the
+    /// server bills claimed distance against EffectiveMoveSpeed with a 1.25
+    /// tolerance, an un-normalised diagonal would have every honest player
+    /// walking north-east flagged as a speed hacker.
+    ///
+    /// Facing follows the CURSOR rather than the direction of travel, which is
+    /// the whole point of the scheme: you can back away from a boss while still
+    /// aiming at it. Facing is cosmetic -- every ability carries its own aim
+    /// point to the server -- so this adds no authority surface.
     /// </summary>
-    private void ProbeNavigation()
-    {
-        if (_navProbeFrames > 2) return;
-        if (_navProbeFrames++ < 2) return;
-
-        var region = GetTree().GetFirstNodeInGroup("nav_region") as NavigationRegion3D;
-        _useNavigation = region?.NavigationMesh is { } mesh && mesh.GetPolygonCount() > 0;
-    }
-
     private void DriveLocally(float dt)
     {
         if (_pushing)
@@ -406,59 +398,83 @@ public partial class Hero : CharacterBody3D, ICombatant
             return;
         }
 
-        Vector3 flatToTarget = _moveTarget - GlobalPosition;
-        flatToTarget.Y = 0f;
-
-        if (_hasTarget && flatToTarget.Length() > ArriveDistance && IsAlive)
-        {
-            Vector3 dir = SteeringDirection();
-
-            if (dir != Vector3.Zero)
-            {
-                float speed = EffectiveMoveSpeed;
-                Velocity = new Vector3(dir.X * speed, 0f, dir.Z * speed);
-
-                // Godot's forward is -Z, so the yaw that points -Z along dir is this.
-                float wanted = Mathf.Atan2(-dir.X, -dir.Z);
-                Rotation = new Vector3(0f, Mathf.LerpAngle(Rotation.Y, wanted, Smoothing(TurnSpeed, dt)), 0f);
-            }
-        }
-        else
-        {
-            Velocity = Vector3.Zero;
-            _hasTarget = false;
-        }
-
+        Velocity = IsAlive ? WishDirection() * EffectiveMoveSpeed : Vector3.Zero;
         MoveAndSlide();
+        HoldInsideArena();
+
+        if (IsAlive)
+        {
+            FaceCursor(dt);
+            ReadAbilityInput();
+        }
+
         PublishPosition();
     }
 
-    /// <summary>
-    /// Which way to walk, in the ground plane.
-    ///
-    /// Two things here are scar tissue, and both once froze movement completely.
-    ///
-    /// A baked navigation mesh does NOT sit at the height of the ground it was
-    /// baked from -- Recast places it a couple of voxels up, half a metre in this
-    /// arena. So the agent's next waypoint is routinely directly ABOVE the hero,
-    /// and any comparison that keeps the Y axis reads that as "somewhere to go"
-    /// when there is nowhere to go. Flatten before measuring, never after.
-    ///
-    /// And when the agent hands back a point we are already standing on, steer at
-    /// the final destination rather than returning zero. Returning zero leaves
-    /// Velocity untouched and the hero stands still forever with a live order,
-    /// which is indistinguishable from the game being broken.
-    /// </summary>
-    private Vector3 SteeringDirection()
+    private Vector3 WishDirection()
     {
-        Vector3 step = _useNavigation ? _agent.GetNextPathPosition() : _moveTarget;
+        Vector2 keys = Input.GetVector(
+            Bindings.MoveLeft, Bindings.MoveRight, Bindings.MoveUp, Bindings.MoveDown);
 
-        Vector3 dir = new(step.X - GlobalPosition.X, 0f, step.Z - GlobalPosition.Z);
+        if (keys == Vector2.Zero) return Vector3.Zero;
+        if (!RtsCamera.GroundBasis(this, out Vector3 forward, out Vector3 right)) return Vector3.Zero;
 
-        if (dir.LengthSquared() < 0.0004f)
-            dir = new Vector3(_moveTarget.X - GlobalPosition.X, 0f, _moveTarget.Z - GlobalPosition.Z);
+        // GetVector's Y is negative for "up", so subtracting points W at the screen.
+        return right * keys.X - forward * keys.Y;
+    }
 
-        return dir.LengthSquared() > 0.0001f ? dir.Normalized() : Vector3.Zero;
+    /// <summary>
+    /// The arena has no walls, only a radius, so nothing physical stops a player
+    /// walking into the void. Under click-to-move the destination was always a
+    /// point on the ground and this never came up; a held key has no destination
+    /// to be sane. The server clamps to the same radius, so a client that skips
+    /// this only desyncs itself.
+    /// </summary>
+    private void HoldInsideArena()
+    {
+        var flat = new Vector2(GlobalPosition.X, GlobalPosition.Z);
+        if (flat.LengthSquared() <= ArenaRadius * ArenaRadius) return;
+
+        flat = flat.Normalized() * ArenaRadius;
+        GlobalPosition = new Vector3(flat.X, GlobalPosition.Y, flat.Y);
+    }
+
+    private void FaceCursor(float dt)
+    {
+        if (!RtsCamera.MouseGroundPoint(this, out Vector3 look)) return;
+
+        Vector3 toCursor = new(look.X - GlobalPosition.X, 0f, look.Z - GlobalPosition.Z);
+        if (toCursor.LengthSquared() < 0.04f) return;
+
+        // Godot's forward is -Z, so the yaw that points -Z along toCursor is this.
+        float wanted = Mathf.Atan2(-toCursor.X, -toCursor.Z);
+        Rotation = new Vector3(0f, Mathf.LerpAngle(Rotation.Y, wanted, Smoothing(TurnSpeed, dt)), 0f);
+    }
+
+    /// <summary>
+    /// Quick-cast, polled rather than edge-triggered: pressing a key casts at the
+    /// cursor immediately, and HOLDING it re-casts the moment the cooldown ends.
+    /// That is what makes a 0.9s basic attack something you hold instead of
+    /// something you mash.
+    ///
+    /// The client's own cooldown copy is what throttles this. Without that gate a
+    /// held key would ask the server sixty times a second for something it has
+    /// already refused fifty-nine times.
+    /// </summary>
+    private void ReadAbilityInput()
+    {
+        double now = Now;
+        int slots = Mathf.Min(Kit.Count, Bindings.AbilitySlots);
+
+        for (int slot = 0; slot < slots; slot++)
+        {
+            if (!Input.IsActionPressed(Bindings.Ability(slot))) continue;
+            if (!_clientCooldowns.IsReady(slot, now)) continue;
+            if (!RtsCamera.MouseGroundPoint(this, out Vector3 aim)) continue;
+
+            // Ask. Do not act. The server decides whether this happened at all.
+            RequestAbility(slot, aim);
+        }
     }
 
     private void SlideThroughKnockback()
@@ -606,34 +622,6 @@ public partial class Hero : CharacterBody3D, ICombatant
     private static float Smoothing(float rate, float dt) => 1f - Mathf.Exp(-rate * dt);
 
     // ---------------------------------------------------------------------
-    // Input -- raw events for now. Swap to InputMap actions from the editor's
-    // Project Settings > Input Map when you want rebindable keys.
-    // ---------------------------------------------------------------------
-
-    public override void _UnhandledInput(InputEvent @event)
-    {
-        if (!IsLocalPlayer || !IsAlive) return;
-
-        if (@event is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right }
-            && RtsCamera.MouseGroundPoint(this, out Vector3 order))
-        {
-            _moveTarget = order;
-            _hasTarget = true;
-            if (_useNavigation) _agent.TargetPosition = order;
-            GetViewport().SetInputAsHandled();
-        }
-
-        if (@event is InputEventKey { Pressed: true, Echo: false } key
-            && TryAbilitySlot(key.Keycode, out int slot)
-            && RtsCamera.MouseGroundPoint(this, out Vector3 aim))
-        {
-            // Ask. Do not act. The server decides whether this happened at all.
-            RequestAbility(slot, aim);
-            GetViewport().SetInputAsHandled();
-        }
-    }
-
-    // ---------------------------------------------------------------------
     // Abilities
     //
     // There is no cast RPC on Hero any more. Everything a player asks for goes
@@ -697,11 +685,5 @@ public partial class Hero : CharacterBody3D, ICombatant
             ["aim"] = aimPoint,
             ["target"] = targetId,
         });
-    }
-
-    private static bool TryAbilitySlot(Key keycode, out int slot)
-    {
-        slot = keycode switch { Key.Q => 0, Key.W => 1, Key.E => 2, Key.R => 3, Key.Key1 => 4, _ => -1 };
-        return slot >= 0;
     }
 }

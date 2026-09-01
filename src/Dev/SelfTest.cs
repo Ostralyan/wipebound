@@ -44,6 +44,8 @@ public static class SelfTest
         CastQueueing();
         Hazards();
         Classes();
+        KitShape();
+        Controls();
         Submission();
         Fingerprint();
         CommandPayloads();
@@ -882,6 +884,110 @@ public static class SelfTest
         }
 
         Check(foundHeal, "the Verdant actually heals somebody");
+    }
+
+    // -- the shape of a kit ----------------------------------------------
+
+    /// <summary>
+    /// Twelve buttons that were all six-second nukes would be twelve buttons and
+    /// one decision. The counts AND the cooldown bands are asserted, because a
+    /// kit does not lose its shape in one commit -- it loses it by somebody
+    /// shaving a defensive from 40 seconds to 12 and nobody noticing that it is
+    /// now part of the rotation.
+    /// </summary>
+    private static void KitShape()
+    {
+        static (float Low, float High) Band(AbilityRole role) => role switch
+        {
+            AbilityRole.Rotational => (0f, 12f),
+            AbilityRole.Situational => (12f, 45f),
+            AbilityRole.Defensive => (30f, 120f),
+            _ => (90f, 240f),
+        };
+
+        foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
+        {
+            var kit = PlayerKit.For(hero);
+            var counts = new Dictionary<AbilityRole, int>();
+            foreach (Ability ability in kit)
+                counts[ability.Role] = counts.GetValueOrDefault(ability.Role) + 1;
+
+            Check(kit.Count >= 10 && kit.Count <= 13, $"{hero} has 10-13 abilities (has {kit.Count})");
+            Check(kit.Count <= Player.Bindings.AbilitySlots, $"{hero}'s kit fits on the keyboard");
+
+            int rotational = counts.GetValueOrDefault(AbilityRole.Rotational);
+            Check(rotational is >= 5 and <= 6, $"{hero} has 5-6 rotational abilities (has {rotational})");
+            Check(counts.GetValueOrDefault(AbilityRole.Situational) == 3, $"{hero} has 3 situational tools");
+            Check(counts.GetValueOrDefault(AbilityRole.Defensive) == 2, $"{hero} has 2 defensive cooldowns");
+            Check(counts.GetValueOrDefault(AbilityRole.Ultimate) == 1, $"{hero} has exactly one ultimate");
+
+            foreach (Ability ability in kit)
+            {
+                (float low, float high) = Band(ability.Role);
+                Check(ability.Cooldown >= low && ability.Cooldown <= high,
+                      $"{hero} {ability.DisplayName} is {ability.Role} on a {ability.Cooldown}s cooldown, outside {low}-{high}s");
+            }
+        }
+    }
+
+    // -- controls --------------------------------------------------------
+
+    private static void Controls()
+    {
+        Player.Bindings.SaveEnabled = false;
+
+        try
+        {
+            // Defaults, deterministically -- not whatever this machine's player
+            // has remapped, which would make the collision check flap.
+            Player.Bindings.ResetToDefaults();
+
+            foreach (string action in Player.Bindings.All)
+                if (!InputMap.HasAction(action)) Check(false, $"{action} is registered");
+
+            // THE BUG THIS PREVENTS: W used to both walk you forward and cast
+            // slot 2, because the two claims on that key had nowhere to meet.
+            // Compared as InputMap events rather than printed keycaps, since a
+            // headless DisplayServer has no keyboard layout to name them with.
+            int clashes = 0;
+            string firstClash = "none";
+            foreach (string action in Player.Bindings.All)
+            {
+                foreach (InputEvent bound in InputMap.ActionGetEvents(action))
+                {
+                    foreach (string other in Player.Bindings.All)
+                    {
+                        if (other == action || !InputMap.ActionHasEvent(other, bound)) continue;
+                        if (clashes++ == 0) firstClash = $"{action} and {other}";
+                    }
+                }
+            }
+
+            Check(clashes == 0, $"no default key is bound to two actions (first clash: {firstClash})");
+
+            // Rebinding takes the key away from whoever held it, and says so.
+            var q = new InputEventKey { PhysicalKeycode = Key.Q };
+            bool rebound = Player.Bindings.Rebind(Player.Bindings.MoveUp, q, out string displaced);
+            Check(rebound, "a key can be rebound");
+            Check(displaced == Player.Bindings.Ability(2), $"and reports who lost it (got '{displaced ?? "nobody"}')");
+            Check(InputMap.ActionHasEvent(Player.Bindings.MoveUp, q), "the new owner holds the key");
+            Check(!InputMap.ActionHasEvent(Player.Bindings.Ability(2), q), "and the old owner does not");
+
+            // THE POINT. Keybinds are per-player; the fingerprint gates ranked
+            // submission. If remapping moved the hash, everyone who touched the
+            // options screen would be refused from the leaderboard -- the same
+            // failure as hashing numbers in the ambient locale.
+            string before = Session.ContentHash.Compute();
+            Check(before.Length > 0, "the fingerprint is actually computed, so this comparison means something");
+            Player.Bindings.Rebind(Player.Bindings.Ability(0), new InputEventKey { PhysicalKeycode = Key.Z }, out _);
+            string after = Session.ContentHash.Compute();
+            Check(before == after, "remapping a key leaves the ranked content fingerprint alone");
+        }
+        finally
+        {
+            Player.Bindings.ResetToDefaults();
+            Player.Bindings.SaveEnabled = true;
+        }
     }
 
     // -- submitting runs -------------------------------------------------

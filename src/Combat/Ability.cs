@@ -36,6 +36,22 @@ public enum AiTargeting
     Self = 4,
 }
 
+/// <summary>What a slot is for. See Ability.Role.</summary>
+public enum AbilityRole
+{
+    /// Pressed constantly. Short cooldowns, the texture of the fight.
+    Rotational = 0,
+
+    /// Answers a specific mechanic: a dispel, a shove, an interrupt.
+    Situational = 1,
+
+    /// The panic button. Long enough that spending it is a decision.
+    Defensive = 2,
+
+    /// One per kit, once per fight.
+    Ultimate = 3,
+}
+
 /// <summary>
 /// One ability, as data -- and the same class whether a boss or a player casts it.
 ///
@@ -53,6 +69,21 @@ public partial class Ability : Resource
 {
     [Export] public string Id { get; set; } = "ability";
     [Export] public string DisplayName { get; set; } = "Ability";
+
+    /// <summary>
+    /// What this button is FOR, which is a different question from what it does.
+    ///
+    /// A kit of twelve abilities that are all four-second nukes is twelve
+    /// buttons and one decision. Roles are what stop that: the shape of a kit
+    /// is fixed at six rotational, three situational, two defensive and exactly
+    /// one ultimate, and SelfTest enforces both the counts and the cooldown band
+    /// each role implies. A "defensive" on a 4s cooldown fails the build rather
+    /// than quietly becoming part of the rotation.
+    ///
+    /// It also drives the default keyboard layout: the six you press constantly
+    /// sit under the resting hand, and the ultimate is deliberately out of reach.
+    /// </summary>
+    [Export] public AbilityRole Role { get; set; } = AbilityRole.Rotational;
 
     [ExportGroup("Cost and timing")]
     [Export] public float ManaCost { get; set; }
