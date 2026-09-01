@@ -306,7 +306,9 @@ ground for a cast that was interrupted is worse than no telegraph at all.
 ## Tests
 
 ```
-godot --headless -- --selftest
+godot --headless -- --selftest          # game logic, 236 assertions
+cd backend && cargo test                 # ladder rules
+docker compose up -d && DATABASE_URL=... cargo test   # and its HTTP surface
 ```
 
 Exits non-zero on failure, so CI can gate on it. Covers the things that are silent
