@@ -8,8 +8,9 @@
 //!
 //!     DATABASE_URL=postgres://wipebound:wipebound@localhost:55432/wipebound cargo test
 //!
-//! Without DATABASE_URL they skip rather than fail, so `cargo test` stays green on
-//! a machine with no database while still being the command that runs them.
+//! Without DATABASE_URL they PANIC. Skipping has to be deliberate and visible:
+//! set WIPEBOUND_SKIP_DB_TESTS=1. A job that quietly reported green without a
+//! database proved nothing, which is worse than a red one.
 
 use std::sync::{
     atomic::{AtomicU64, Ordering},

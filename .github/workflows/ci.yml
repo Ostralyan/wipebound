@@ -1,0 +1,147 @@
+name: CI
+
+# Everything here was already being run by hand before each commit. The point of
+# writing it down is that a human doing it remembers most of the time: this repo
+# has shipped a debug print across four commits and had a regression caught only
+# because somebody happened to re-run the two-process test that day.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GODOT_VERSION: 4.7.2
+
+jobs:
+  game:
+    name: Godot self-test and a real two-process run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Fetch Godot ${{ env.GODOT_VERSION }} (mono)
+        run: |
+          set -euo pipefail
+          base="Godot_v${GODOT_VERSION}-stable_mono_linux_x86_64"
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/${base}.zip"
+          echo "::group::$url"
+          curl -fsSL -o godot.zip "$url"
+          unzip -q godot.zip
+          echo "::endgroup::"
+          echo "GODOT=$PWD/${base}/${base}" >> "$GITHUB_ENV"
+
+      - name: Build the C# assembly
+        run: dotnet build --nologo -warnaserror
+
+      - name: Import assets
+        run: |
+          # First import on a clean checkout writes .godot/ and can report a
+          # nonzero status while still succeeding; the selftest below is the real
+          # gate, so do not let this stop the job.
+          "$GODOT" --headless --path . --import || true
+          "$GODOT" --headless --path . --import
+
+      - name: Self-test
+        run: |
+          set -uo pipefail
+          "$GODOT" --headless --path . --quit-after 1200 -- --selftest 2>&1 | tee selftest.log
+          status=${PIPESTATUS[0]}
+          # Both gates. The exit code alone is not enough -- Godot has been known
+          # to exit 0 after printing failures -- and the log alone would pass if
+          # the run crashed before reaching the summary.
+          grep -qE '\[selftest\] [0-9]+ passed, 0 failed' selftest.log \
+            || { echo "::error::self-test did not report a clean run"; exit 1; }
+          exit "$status"
+
+      - name: Dedicated server and a client, for real
+        run: |
+          set -uo pipefail
+          "$GODOT" --headless --path . --quit-after 9000 -- --server --port 7999 > server.log 2>&1 &
+          server=$!
+          sleep 5
+          "$GODOT" --headless --path . --quit-after 6500 -- --join 127.0.0.1 --port 7999 > client.log 2>&1 || true
+          wait "$server" || true
+
+          errors=$(cat server.log client.log | grep -cE '^ERROR|^SCRIPT ERROR' || true)
+          if [ "$errors" != "0" ]; then
+            echo "::error::$errors engine errors across the two processes"
+            grep -E '^ERROR|^SCRIPT ERROR' server.log client.log | head -20
+            exit 1
+          fi
+          grep -q 'content_hash' server.log \
+            || { echo "::error::the server never recorded a run"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: godot-logs
+          path: |
+            selftest.log
+            server.log
+            client.log
+
+  backend:
+    name: Rust ladder service
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: wipebound
+          POSTGRES_PASSWORD: wipebound
+          POSTGRES_DB: wipebound
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U wipebound -d wipebound"
+          --health-interval 2s --health-timeout 3s --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://wipebound:wipebound@localhost:5432/wipebound
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: Create the schema
+        # The same file docker-compose mounts, so local and CI databases cannot
+        # drift apart into two definitions of the same table.
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/2026-08-31-000000_init/up.sql
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --all-targets
+
+  hygiene:
+    name: No debugging left behind
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for diagnostics that should not have been committed
+        run: |
+          set -uo pipefail
+          # Each of these has actually shipped from this repo or was one review
+          # away from it. Matching is on committed source only.
+          patterns='GD\.Print\(\$?"HASH|\[diag\]|\[why\]|dbg!\(|println!\("DEBUG|Console\.WriteLine|GD\.Print\(\$?"TEMP'
+          if grep -rnE "$patterns" src backend/src backend/tests; then
+            echo "::error::debug diagnostics found in committed source"
+            exit 1
+          fi
+          echo "clean"
