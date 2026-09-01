@@ -32,6 +32,9 @@ public static class Untrusted
     /// </summary>
     public const float SpeedTolerance = 1.25f;
 
+    /// Metres of overreach charged for a single non-finite claim.
+    public const float GarbageClaimPenalty = 100f;
+
     public static bool IsFinite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
     public static bool IsFinite(Vector3 value)
@@ -44,8 +47,33 @@ public static class Untrusted
     /// </summary>
     public static Vector3 AdvanceValidatedPosition(Vector3 validated, Vector3 claimed,
                                                    float maxSpeed, float delta, float arenaRadius)
+        => AdvanceValidatedPosition(validated, claimed, maxSpeed, delta, arenaRadius, out _);
+
+    /// <summary>
+    /// As above, and reports how far the claim exceeded what was legal.
+    ///
+    /// Clamping a claim silently is the right thing for gameplay and the wrong
+    /// thing for a leaderboard. A run is only worth ranking if you can say whether
+    /// it was played, and overreach is the measurement: a normal client accumulates
+    /// essentially none of it, while anything moving faster than it should leaves a
+    /// trail proportional to how much faster.
+    ///
+    /// This measures rather than punishes on purpose. The decision of what amount
+    /// disqualifies a run belongs with whoever runs the ladder, not in here.
+    /// </summary>
+    public static Vector3 AdvanceValidatedPosition(Vector3 validated, Vector3 claimed,
+                                                   float maxSpeed, float delta, float arenaRadius,
+                                                   out float overreach)
     {
-        if (!IsFinite(claimed) || !IsFinite(delta) || delta <= 0f) return validated;
+        overreach = 0f;
+
+        if (!IsFinite(claimed) || !IsFinite(delta) || delta <= 0f)
+        {
+            // Garbage is not "slightly too fast", it is a deliberate attempt to
+            // poison the server's copy. Weight it so it cannot hide in the noise.
+            if (!IsFinite(claimed)) overreach = GarbageClaimPenalty;
+            return validated;
+        }
 
         // Nothing legitimate is ever outside the arena, and allowing it would let a
         // client sit at 1e30 and drag its own validated position outward forever.
@@ -58,6 +86,8 @@ public static class Untrusted
         float distance = offset.Length();
 
         if (distance <= budget || distance <= 0f) return target;
+
+        overreach = distance - budget;
         return validated + offset / distance * budget;
     }
 }

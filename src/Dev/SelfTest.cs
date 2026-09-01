@@ -120,6 +120,20 @@ public static class SelfTest
         Check(Untrusted.IsFinite(poisoned), "a NaN claim cannot poison the validated position");
         Near(poisoned.X, 5f, "a NaN claim is ignored outright");
 
+        // Honest movement leaves no trail; a ladder needs that to be true or the
+        // measurement is worthless.
+        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(0.05f, 0f, 0f),
+                                           7f, 1f / 60f, 44f, out float honest);
+        Near(honest, 0f, "legitimate movement records no overreach");
+
+        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(50f, 0f, 0f),
+                                           7f, 1f / 60f, 44f, out float cheating);
+        Check(cheating > 40f, $"a teleport records the distance it overreached ({cheating:0.0}m)");
+
+        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(float.NaN, 0f, 0f),
+                                           7f, 1f / 60f, 44f, out float garbage);
+        Near(garbage, Untrusted.GarbageClaimPenalty, "a non-finite claim is charged heavily");
+
         Vector3 farAway = Untrusted.AdvanceValidatedPosition(
             Vector3.Zero, new Vector3(1e30f, 0f, 0f), 7f, 1f, 44f);
         Check(farAway.Length() <= 44.01f, "claims outside the arena are clamped to it");

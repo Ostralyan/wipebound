@@ -62,6 +62,13 @@ public partial class Hero : CharacterBody3D, ICombatant
     [Export] public float HealingDone { get => _contribution.HealingDone; set => _contribution.HealingDone = value; }
     [Export] public float DamageTaken { get => _contribution.DamageTaken; set => _contribution.DamageTaken = value; }
 
+    /// <summary>
+    /// Total metres this client has claimed beyond what it could legally have
+    /// travelled. Honest play leaves this at essentially zero; it is the number a
+    /// ladder would look at before accepting a run.
+    /// </summary>
+    [Export] public float Overreach { get; set; }
+
     /// The whole status set as one small string. See StatusTracker for why a string.
     [Export] public string StatusPayload { get => _status.Encoded; set => _status.Decode(value); }
 
@@ -269,6 +276,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         _mana.Fill();
         _status.Clear();
         _contribution.Clear();
+        Overreach = 0f;
         ClearCooldowns();
         ServerTeleport(SpawnPoint);
         GD.Print($"[combat] {CombatName} revived");
@@ -481,7 +489,9 @@ public partial class Hero : CharacterBody3D, ICombatant
         // validated with the same discipline: garbage rejected, arena bounds
         // enforced, and a per-tick budget with no additive slack.
         ServerPosition = Untrusted.AdvanceValidatedPosition(
-            ServerPosition, NetPosition, EffectiveMoveSpeed, dt, ArenaRadius);
+            ServerPosition, NetPosition, EffectiveMoveSpeed, dt, ArenaRadius, out float overreach);
+
+        if (overreach > 0f) Overreach += overreach;
     }
 
     private void UpdateAppearance()
