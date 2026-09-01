@@ -44,6 +44,7 @@ public static class SelfTest
         CastQueueing();
         Hazards();
         Classes();
+        DeadTargetsStayDead();
         KitShape();
         Controls();
         Submission();
@@ -884,6 +885,47 @@ public static class SelfTest
         }
 
         Check(foundHeal, "the Verdant actually heals somebody");
+    }
+
+    /// <summary>
+    /// The target list is built once and every effect in an ability shares it, so
+    /// an effect that kills changes the world the effects after it act on. Damage
+    /// and healing already refuse the dead; this proves statuses do too.
+    /// </summary>
+    private static void DeadTargetsStayDead()
+    {
+        var victim = new Dummy { CombatId = 9, CombatName = "victim" };
+        victim.HealthPool.Current = 10f;
+
+        var targets = new List<ICombatant> { victim };
+        var context = new EffectContext
+        {
+            AbilityName = "two-part",
+            Caster = new Dummy { CombatId = -9, CombatName = "boss", Team = Team.Enemies },
+            Targets = targets,
+            Candidates = targets,
+            Now = 100.0,
+        };
+
+        new DamageEffect { Amount = 40f }.Resolve(context);
+        Check(!victim.IsAlive, "the first effect in the list kills the target");
+
+        new ApplyStatusEffect { StatusId = StatusLibrary.Burning }.Resolve(context);
+        Check(victim.Status.Active.Count == 0, "and a later effect does not hang a status on the body");
+
+        // The living are unaffected by the guard.
+        var survivor = new Dummy { CombatId = 10, CombatName = "survivor" };
+        var live = new List<ICombatant> { survivor };
+        new ApplyStatusEffect { StatusId = StatusLibrary.Burning }.Resolve(new EffectContext
+        {
+            AbilityName = "two-part",
+            Caster = context.Caster,
+            Targets = live,
+            Candidates = live,
+            Now = 100.0,
+        });
+
+        Check(survivor.Status.Active.Count == 1, "somebody still standing still gets it");
     }
 
     // -- the shape of a kit ----------------------------------------------

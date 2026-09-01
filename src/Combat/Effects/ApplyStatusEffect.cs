@@ -23,7 +23,17 @@ public partial class ApplyStatusEffect : AbilityEffect
         }
 
         foreach (ICombatant target in context.Targets)
+        {
+            // Targets was snapshotted before the FIRST effect ran, so by the time
+            // a later effect in the same list gets here some of them may be
+            // corpses -- Rupture is {damage, Sundered, Burning}, and its damage
+            // can kill. Every ApplyDamage and Heal already refuses the dead; this
+            // was the one consequence that did not, which meant a status could be
+            // hung on a body. Detonation has an expiry effect, so that body would
+            // go off later.
+            if (target is null || !target.IsAlive) continue;
             target.Status.Apply(definition, context.Caster, context.Now);
+        }
     }
 
     public override string Describe(EffectContext context)
