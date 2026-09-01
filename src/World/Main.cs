@@ -36,6 +36,11 @@ public partial class Main : Node3D
             return;
         }
 
+        // A client that walks and casts on its own, for network tests that need
+        // somebody to actually move. See Dev/BotDriver.
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--bot") >= 0)
+            AddChild(new Dev.BotDriver { Name = "BotDriver" });
+
         // godot --headless -- --selftest   (exits non-zero on failure, for CI)
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--selftest") >= 0)
         {

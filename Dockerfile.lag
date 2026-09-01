@@ -1,0 +1,17 @@
+# Test-only image: the server plus the tools to make the network bad on purpose.
+#
+# Separate from the production Dockerfile so a shipping image never carries
+# packet-shaping tools or runs as root.
+FROM ubuntu:24.04
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libicu74 ca-certificates iproute2 \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY build/linux/wipebound-server.arm64 /usr/local/bin/wipebound
+RUN chmod 0755 /usr/local/bin/wipebound
+
+COPY tools/lag-entry.sh /usr/local/bin/lag-entry
+RUN chmod 0755 /usr/local/bin/lag-entry
+
+ENTRYPOINT ["/usr/local/bin/lag-entry"]

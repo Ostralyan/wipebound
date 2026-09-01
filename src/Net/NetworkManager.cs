@@ -189,19 +189,40 @@ public partial class NetworkManager : Node
         return true;
     }
 
+    /// <summary>We are leaving. Ours to close, so we close it.</summary>
     public void Leave()
     {
         Multiplayer.MultiplayerPeer?.Close();
         Multiplayer.MultiplayerPeer = null;
+        ForgetSession("Left the session.", dropOurs: true);
+    }
+
+    /// <summary>
+    /// Drop what belongs to the session, WITHOUT touching the peer.
+    ///
+    /// Separate from Leave because the two cases are genuinely different. When we
+    /// leave, the peer is ours to close. When the server goes away, the engine
+    /// has already dropped the peer and already removed the nodes its spawners
+    /// gave us -- and asking it to do that again makes it disconnect signals it
+    /// has just disconnected, roughly a dozen times per client, every time a
+    /// server restarts.
+    /// </summary>
+    private void ForgetSession(string reason, bool dropOurs)
+    {
         Mode = NetMode.Offline;
         _connectDeadline = 0.0;
         _slotByPeer.Clear();
 
-        if (_heroContainer is not null)
+        // Only when the session was ours to end. Heroes arrive through a
+        // MultiplayerSpawner, so when the SERVER goes away the engine is already
+        // taking them back; freeing them again from here races its bookkeeping.
+        if (dropOurs && _heroContainer is not null)
+        {
             foreach (Node child in _heroContainer.GetChildren())
-                child.QueueFree();
+                if (GodotObject.IsInstanceValid(child)) child.QueueFree();
+        }
 
-        Status("Left the session.");
+        Status(reason);
         EmitSignal(SignalName.ModeChanged);
     }
 
@@ -340,7 +361,15 @@ public partial class NetworkManager : Node
     private void OnServerDisconnected()
     {
         Status("Server closed the session.");
-        Leave();
+
+        // Deferred, and pointedly NOT Leave(): we are inside the engine's own
+        // disconnect handling, the peer is already gone, and the replicated nodes
+        // are already going. All that is left is to forget the session.
+        //
+        // Only reachable once a server closes a session first. Every test before
+        // the latency rig had the clients quitting first, so this path had never
+        // run.
+        CallDeferred(nameof(ForgetSession), "Server closed the session.", false);
     }
 
     // ---------------------------------------------------------------------
