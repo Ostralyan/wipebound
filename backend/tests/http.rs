@@ -20,12 +20,11 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use diesel::prelude::*;
 use diesel_async::RunQueryDsl;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use wipebound_backend::{config::Config, db, router, schema::runs, AppState};
+use wipebound_backend::{config::Config, db, router, AppState};
 
 const TOKEN: &str = "integration-token";
 const HASH: &str = "hash-current";
@@ -324,53 +323,27 @@ async fn the_same_body_from_another_server_is_a_conflict() {
     assert_eq!(status, StatusCode::CONFLICT);
 }
 
-/// Runs recorded before digests existed carry an empty one. The spool exists to
-/// retry across restarts and deployments, so without a legacy path the first
-/// deploy after that migration would have turned every in-flight retry into a 409
-/// and lost the run.
+/// There is no compatibility path for a row without a digest, so there must be no
+/// way to write one. NOT NULL with no default is the guarantee; this proves the
+/// database actually enforces it rather than trusting the migration text.
 #[tokio::test]
-async fn a_retry_of_a_pre_digest_run_is_recognised_and_backfilled() {
+async fn a_run_cannot_be_stored_without_a_digest() {
     let app = require_db!();
-    let id = unique("legacy");
-    let boss = format!("boss-{id}");
-    let payload = run(&id, &boss, "kill", 33_000, HASH, "dedicated");
+    let mut conn = app.pool.get().await.unwrap();
 
-    let (status, _) = call(app.clone(), submit(payload.clone(), Some(TOKEN))).await;
-    assert_eq!(status, StatusCode::CREATED);
+    let attempt = diesel::sql_query(
+        "INSERT INTO runs (id, boss, outcome, duration_ms, content_hash, engine, \
+         authority, rankable, worst_overreach_cm, game_server) \
+         VALUES ('nodigest0000000000000000000000ab', 'b', 'kill', 1, 'h', 'e', \
+         'dedicated', false, 0, 's')",
+    )
+    .execute(&mut conn)
+    .await;
 
-    // Make it look like a row written before the column existed.
-    {
-        let mut conn = app.pool.get().await.unwrap();
-        diesel::update(runs::table.find(&id))
-            .set(runs::submission_digest.eq(""))
-            .execute(&mut conn)
-            .await
-            .unwrap();
-    }
-
-    let (status, body) = call(app.clone(), submit(payload, Some(TOKEN))).await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "a retry of a pre-digest run is still a retry"
+    assert!(
+        attempt.is_err(),
+        "a row with no digest must be impossible, or the comparison has a hole"
     );
-    assert_eq!(body["duplicate"], true);
-
-    // And it is only legacy once.
-    {
-        let mut conn = app.pool.get().await.unwrap();
-        let digest: String = runs::table
-            .find(&id)
-            .select(runs::submission_digest)
-            .first(&mut conn)
-            .await
-            .unwrap();
-
-        assert!(
-            !digest.is_empty(),
-            "the digest is backfilled on first recognition"
-        );
-    }
 }
 
 #[tokio::test]

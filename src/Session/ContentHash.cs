@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text;
 using Godot;
 using Wipebound.Combat;
@@ -45,7 +46,11 @@ public static class ContentHash
 
     public static string Current { get; } = Compute();
 
-    private static string Compute()
+    /// <summary>
+    /// Recomputed rather than cached, so a test can check the fingerprint is the
+    /// same under a different locale.
+    /// </summary>
+    public static string Compute()
     {
         var builder = new StringBuilder();
         var path = new HashSet<ulong>();
@@ -78,18 +83,31 @@ public static class ContentHash
     /// </summary>
     private static void AppendConstants(StringBuilder builder)
     {
-        builder.Append("constants(")
-               .Append("arena=").Append(Player.Hero.ArenaRadius).Append(';')
-               .Append("speedMargin=").Append(Player.Hero.SpeedChangeMargin).Append(';')
-               .Append("ack=").Append(Player.Hero.AcknowledgeDistance).Append(';')
-               .Append("tolerance=").Append(MovementValidator.SpeedTolerance).Append(';')
-               .Append("burst=").Append(MovementValidator.BurstSeconds).Append(';')
-               .Append("garbage=").Append(MovementValidator.GarbageClaimPenalty).Append(';')
-               .Append("attentionHalfLife=").Append(TargetSelection.AttentionHalfLife).Append(';')
-               .Append("attentionMemory=").Append(TargetSelection.AttentionMemory).Append(';')
-               .Append("maxCreditedRtt=").Append(Net.NetClock.MaxCreditedRtt).Append(';')
-               .Append(')');
+        builder.Append("constants(");
+        Constant(builder, "arena", Player.Hero.ArenaRadius);
+        Constant(builder, "speedMargin", Player.Hero.SpeedChangeMargin);
+        Constant(builder, "ack", Player.Hero.AcknowledgeDistance);
+        Constant(builder, "tolerance", MovementValidator.SpeedTolerance);
+        Constant(builder, "burst", MovementValidator.BurstSeconds);
+        Constant(builder, "garbage", MovementValidator.GarbageClaimPenalty);
+        Constant(builder, "attentionHalfLife", TargetSelection.AttentionHalfLife);
+        Constant(builder, "attentionMemory", TargetSelection.AttentionMemory);
+        Constant(builder, "maxCreditedRtt", Net.NetClock.MaxCreditedRtt);
+        builder.Append(')');
     }
+
+    private static void Constant(StringBuilder builder, string name, double value)
+        => builder.Append(name).Append('=').Append(Number(value)).Append(';');
+
+    /// <summary>
+    /// The single place a number becomes text here.
+    ///
+    /// Invariant, and round-trip formatted. Appending a float directly used the
+    /// AMBIENT CULTURE, so a machine with a comma decimal separator wrote 0,15
+    /// where another wrote 0.15 -- identical builds, different fingerprints, and a
+    /// ladder that rejected runs depending on where the server happened to be.
+    /// </summary>
+    private static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Instantiate the scenes that carry tuning and read their script exports.
@@ -191,6 +209,38 @@ public static class ContentHash
                     builder.Append(',');
                 }
                 builder.Append('}');
+                return;
+
+            // Everything carrying a decimal is formatted here rather than left to
+            // Godot's stringify, so the encoding is ours and provably invariant.
+            case Variant.Type.Float:
+                builder.Append(Number(value.AsDouble()));
+                return;
+
+            case Variant.Type.Vector2:
+            {
+                Vector2 v = value.AsVector2();
+                builder.Append(Number(v.X)).Append(',').Append(Number(v.Y));
+                return;
+            }
+
+            case Variant.Type.Vector3:
+            {
+                Vector3 v = value.AsVector3();
+                builder.Append(Number(v.X)).Append(',').Append(Number(v.Y)).Append(',').Append(Number(v.Z));
+                return;
+            }
+
+            case Variant.Type.Color:
+            {
+                Color c = value.AsColor();
+                builder.Append(Number(c.R)).Append(',').Append(Number(c.G)).Append(',')
+                       .Append(Number(c.B)).Append(',').Append(Number(c.A));
+                return;
+            }
+
+            case Variant.Type.Int:
+                builder.Append(value.AsInt64().ToString(CultureInfo.InvariantCulture));
                 return;
 
             default:

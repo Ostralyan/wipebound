@@ -121,36 +121,19 @@ pub async fn submit(
             .optional()?
             .ok_or_else(|| AppError::Internal("run vanished between insert and read".into()))?;
 
-        // A run recorded before digests existed has an empty one. The spool exists
-        // precisely to retry across restarts and deployments, so without this the
-        // first deploy after the migration would have turned every in-flight retry
-        // into a 409. Fall back to the fields that were compared then, and backfill
-        // so it only happens once per run.
-        let same_run = if stored.submission_digest.is_empty() {
-            let legacy = domain::matches_legacy_fields(
-                &submission,
-                &stored.outcome,
-                stored.duration_ms,
-                &stored.content_hash,
-                &stored.authority,
-                stored.worst_overreach_cm,
-            );
-
-            if legacy {
-                diesel::update(runs::table.find(&submission.run_id))
-                    .set(runs::submission_digest.eq(&digest))
-                    .execute(&mut conn)
-                    .await?;
-
-                tracing::info!(run = %submission.run_id, "backfilled a pre-digest run");
-            }
-
-            legacy
-        } else {
-            stored.submission_digest == digest
-        };
-
-        if !same_run {
+        // One comparison, over everything the submitter said.
+        //
+        // There is deliberately NO compatibility path for a row without a digest.
+        // The column is NOT NULL with no default and shipped before any database
+        // existed, so such a row cannot be written -- and the path that used to
+        // handle one compared five fields, which was precisely the vulnerability
+        // the digest was introduced to close. A compatibility shim that
+        // reintroduces the bug it is compatible with is worse than the migration
+        // it saves.
+        //
+        // An empty digest would fail closed, which is the right direction anyway:
+        // the run is already stored, so refusing its retry loses nothing.
+        if stored.submission_digest != digest {
             return Err(AppError::Conflict(format!(
                 "run {} already exists with different contents",
                 submission.run_id

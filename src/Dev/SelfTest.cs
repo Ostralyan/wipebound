@@ -45,6 +45,7 @@ public static class SelfTest
         Hazards();
         Classes();
         Submission();
+        Fingerprint();
         CommandPayloads();
         SpawnAllocation();
 
@@ -466,11 +467,18 @@ public static class SelfTest
         Check(mirror.Active.Count == 2, "both instances survive encoding");
         Check(mirror.Active[0].SourceId == target.Status.Active[0].SourceId, "source id survives encoding");
 
-        // Older, shorter entries must still decode, so the format can grow.
-        var legacy = new StatusTracker();
-        legacy.Decode($"{StatusLibrary.Crippled}:500:1");
-        Check(legacy.Active.Count == 1, "a three-field entry still decodes");
-        Near(legacy.MoveSpeedMultiplier, 0.55f, "a truncated entry still aggregates");
+        // A truncated entry is corruption, not an older sender: a client and its
+        // server are always the same build, so there is no shorter format to be
+        // compatible with.
+        var truncated = new StatusTracker();
+        truncated.Decode($"{StatusLibrary.Crippled}:500:1");
+        Check(truncated.Active.Count == 0, "a truncated entry is rejected rather than half-read");
+        Near(truncated.MoveSpeedMultiplier, 1f, "and contributes nothing");
+
+        var whole = new StatusTracker();
+        whole.Decode($"{StatusLibrary.Crippled}:500:1:7:0");
+        Check(whole.Active.Count == 1, "a complete entry decodes");
+        Near(whole.MoveSpeedMultiplier, 0.55f, "and aggregates");
     }
 
     // -- shields ---------------------------------------------------------
@@ -910,6 +918,44 @@ public static class SelfTest
 
         Near((float)SubmissionPolicy.BackoffFor(99), (float)SubmissionPolicy.MaxBackoffSeconds,
              "and is capped so it stays plausible");
+    }
+
+    // -- the content fingerprint -----------------------------------------
+
+    private static void Fingerprint()
+    {
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+
+        try
+        {
+            var english = new System.Globalization.CultureInfo("en-US");
+            var german = new System.Globalization.CultureInfo("de-DE");
+
+            System.Globalization.CultureInfo.CurrentCulture = german;
+            string decimalHere = 0.15.ToString();
+
+            // If ICU is unavailable the cultures collapse and this test would pass
+            // without proving anything, so say so rather than report a false green.
+            Check(decimalHere == "0,15",
+                  $"the test locale really does format differently (got '{decimalHere}')");
+
+            string underGerman = ContentHash.Compute();
+
+            System.Globalization.CultureInfo.CurrentCulture = english;
+            string underEnglish = ContentHash.Compute();
+
+            // Appending a float used the ambient culture, so identical builds
+            // produced different fingerprints and a ladder rejected runs based on
+            // where the server happened to be running.
+            Check(underGerman == underEnglish,
+                  $"the fingerprint is the same in every locale ({underGerman} vs {underEnglish})");
+
+            Check(underEnglish == ContentHash.Current, "and matches the one computed at startup");
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
     }
 
     // -- command payloads ------------------------------------------------

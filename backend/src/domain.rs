@@ -97,23 +97,6 @@ pub fn digest(submission: &RunSubmission, game_server: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// The five fields the digest replaced. Kept solely to recognise a retry of a run
-/// recorded before digests existed, whose stored digest is empty.
-pub fn matches_legacy_fields(
-    submission: &RunSubmission,
-    outcome: &str,
-    duration_ms: i64,
-    content_hash: &str,
-    authority: &str,
-    worst_overreach_cm: i64,
-) -> bool {
-    submission.outcome == outcome
-        && submission.duration_ms == duration_ms
-        && submission.content_hash == content_hash
-        && submission.authority == authority
-        && submission.worst_overreach_cm == worst_overreach_cm
-}
-
 /// Malformed or self-contradictory. Refused outright, nothing stored.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Rejection {

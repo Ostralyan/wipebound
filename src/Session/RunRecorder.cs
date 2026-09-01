@@ -76,8 +76,8 @@ public partial class RunRecorder : Node
         Godot.Collections.Dictionary record = Build(victory);
         GD.Print($"[run] {Json.Stringify(record)}");
 
-        // Where the POST to the backend goes. Deliberately not written yet: the
-        // shape has to be settled before anything depends on it.
+        // RunSubmitter listens here and ships it. Kept as a hook rather than a
+        // direct call so recording a run does not depend on being able to send one.
         Submitted?.Invoke(record);
     }
 

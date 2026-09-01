@@ -18,8 +18,9 @@ CREATE TABLE runs (
     authority          TEXT NOT NULL,
 
     -- A fingerprint of the whole submission. Comparing a few columns let a
-    -- different run reusing an id pass as a retry.
-    submission_digest  TEXT NOT NULL DEFAULT '',
+    -- different run reusing an id pass as a retry. No default: a run without one
+    -- cannot exist, so there is no "unknown digest" case to reason about.
+    submission_digest  TEXT NOT NULL,
 
     -- The backend's conclusion, never the submitter's claim.
     rankable           BOOLEAN NOT NULL,

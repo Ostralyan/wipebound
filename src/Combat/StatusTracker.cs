@@ -363,20 +363,21 @@ public sealed class StatusTracker
             {
                 string[] parts = entry.Split(':');
 
-                // Trailing fields are optional so the format can grow without a
-                // version handshake: an older sender simply omits them.
-                if (parts.Length < 3) continue;
+                // Exactly the five fields Rebuild writes, and no fewer.
+                //
+                // This used to accept short entries "so the format can grow without
+                // a version handshake", which was speculative: a client and its
+                // server are the same build, so a truncated entry can only mean a
+                // corrupt payload. Accepting one silently produced a status with a
+                // missing source and no shield rather than an obvious fault.
+                if (parts.Length != 5) continue;
 
                 StatusEffect definition = StatusLibrary.Get(parts[0]);
                 if (definition is null) continue;
                 if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double expires)) continue;
                 if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int stacks)) continue;
-
-                int sourceId = 0;
-                if (parts.Length > 3) int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out sourceId);
-
-                float absorb = 0f;
-                if (parts.Length > 4) float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out absorb);
+                if (!int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out int sourceId)) continue;
+                if (!float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out float absorb)) continue;
 
                 _active.Add(new ActiveStatus
                 {
