@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -50,7 +51,17 @@ public static class ContentHash
     /// Recomputed rather than cached, so a test can check the fingerprint is the
     /// same under a different locale.
     /// </summary>
-    public static string Compute()
+    public static string Compute() => Fnv1a(Manifest());
+
+    /// <summary>
+    /// The exact bytes Compute() hashes.
+    ///
+    /// Exists because "your server reports a different fingerprint from the one
+    /// the ladder whitelists" is otherwise undebuggable: two sixteen-character
+    /// hashes tell you that they differ and nothing about where. Diff this
+    /// between the two builds instead.
+    /// </summary>
+    public static string Manifest()
     {
         var builder = new StringBuilder();
         var path = new HashSet<ulong>();
@@ -75,7 +86,7 @@ public static class ContentHash
         AppendTunedScenes(builder);
         AppendConstants(builder);
 
-        return Fnv1a(builder.ToString());
+        return builder.ToString();
     }
 
     /// <summary>
@@ -90,21 +101,28 @@ public static class ContentHash
     /// </summary>
     private static void AppendConstants(StringBuilder builder)
     {
+        // Sorted like every other block. These are written by hand in a fixed
+        // order, so they were already deterministic -- but a manifest with one
+        // block that plays by different rules is a manifest nobody can check
+        // mechanically, and the check is what caught the export drift.
+        var constants = new SortedDictionary<string, double>(StringComparer.Ordinal)
+        {
+            ["arena"] = Player.Hero.ArenaRadius,
+            ["speedMargin"] = Player.Hero.SpeedChangeMargin,
+            ["ack"] = Player.Hero.AcknowledgeDistance,
+            ["tolerance"] = MovementValidator.SpeedTolerance,
+            ["burst"] = MovementValidator.BurstSeconds,
+            ["garbage"] = MovementValidator.GarbageClaimPenalty,
+            ["attentionHalfLife"] = TargetSelection.AttentionHalfLife,
+            ["attentionMemory"] = TargetSelection.AttentionMemory,
+            ["maxCreditedRtt"] = Net.NetClock.MaxCreditedRtt,
+        };
+
         builder.Append("constants(");
-        Constant(builder, "arena", Player.Hero.ArenaRadius);
-        Constant(builder, "speedMargin", Player.Hero.SpeedChangeMargin);
-        Constant(builder, "ack", Player.Hero.AcknowledgeDistance);
-        Constant(builder, "tolerance", MovementValidator.SpeedTolerance);
-        Constant(builder, "burst", MovementValidator.BurstSeconds);
-        Constant(builder, "garbage", MovementValidator.GarbageClaimPenalty);
-        Constant(builder, "attentionHalfLife", TargetSelection.AttentionHalfLife);
-        Constant(builder, "attentionMemory", TargetSelection.AttentionMemory);
-        Constant(builder, "maxCreditedRtt", Net.NetClock.MaxCreditedRtt);
+        foreach ((string name, double value) in constants)
+            builder.Append(name).Append('=').Append(Number(value)).Append(';');
         builder.Append(')');
     }
-
-    private static void Constant(StringBuilder builder, string name, double value)
-        => builder.Append(name).Append('=').Append(Number(value)).Append(';');
 
     /// <summary>
     /// The single place a number becomes text here.
@@ -157,6 +175,7 @@ public static class ContentHash
     {
         builder.Append(label).Append('(');
 
+        var names = new List<string>();
         foreach (Godot.Collections.Dictionary property in node.GetPropertyList())
         {
             var usage = (PropertyUsageFlags)(long)property["usage"];
@@ -170,6 +189,15 @@ public static class ContentHash
             string name = property["name"].AsString();
             if (Ignored.Contains(name)) continue;
 
+            names.Add(name);
+        }
+
+        // Sorted for the same reason the resource walk is: enumeration order is
+        // not the same in an exported build as it is in the editor.
+        names.Sort(StringComparer.Ordinal);
+
+        foreach (string name in names)
+        {
             builder.Append(name).Append('=');
             Append(builder, node.Get(name), 0, new HashSet<ulong>());
             builder.Append(';');
@@ -275,6 +303,19 @@ public static class ContentHash
 
         builder.Append(resource.GetType().Name).Append('(');
 
+        // BY NAME, never in the order the engine hands them back.
+        //
+        // This is not tidiness. An exported build enumerates a script's
+        // properties in a different order from the editor, so the same commit
+        // produced two different fingerprints -- byte-for-byte the same values,
+        // concatenated in a different sequence. The ladder whitelists one hash,
+        // and a dedicated server built from that very commit reported another,
+        // which would have refused every ranked run on the live servers while
+        // every test on a developer's machine passed.
+        //
+        // Sorting makes the manifest canonical: it can then only change when a
+        // NUMBER changes, which is the single thing it is supposed to mean.
+        var names = new List<string>();
         foreach (Godot.Collections.Dictionary property in resource.GetPropertyList())
         {
             var usage = (PropertyUsageFlags)(long)property["usage"];
@@ -283,6 +324,13 @@ public static class ContentHash
             string name = property["name"].AsString();
             if (Ignored.Contains(name)) continue;
 
+            names.Add(name);
+        }
+
+        names.Sort(StringComparer.Ordinal);
+
+        foreach (string name in names)
+        {
             builder.Append(name).Append('=');
             Append(builder, resource.Get(name), depth + 1, path);
             builder.Append(';');

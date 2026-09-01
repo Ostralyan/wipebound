@@ -22,6 +22,20 @@ public partial class Main : Node3D
 
         ApplyGridMaterial();
 
+        // What fingerprint is this build? An operator has to put it in the
+        // backend's RANKED_CONTENT_HASHES before runs from this server can be
+        // ranked, and until now the only way to read it was to finish a run and
+        // fish it out of the submission JSON.
+        //
+        //   wipebound-server.x86_64 --headless -- --content-hash
+        if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--content-hash") >= 0)
+        {
+            bool verbose = System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--verbose-manifest") >= 0;
+            GD.Print(verbose ? Session.ContentHash.Manifest() : Session.ContentHash.Compute());
+            GetTree().Quit(0);
+            return;
+        }
+
         // godot --headless -- --selftest   (exits non-zero on failure, for CI)
         if (System.Array.IndexOf(OS.GetCmdlineUserArgs(), "--selftest") >= 0)
         {

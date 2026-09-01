@@ -1,5 +1,6 @@
 using Godot;
 using System.Collections.Generic;
+using System.Text;
 using Wipebound.Combat;
 using Wipebound.Combat.Commands;
 using Wipebound.Session;
@@ -46,6 +47,7 @@ public static class SelfTest
         Classes();
         DeadTargetsStayDead();
         Channelling();
+        ManifestIsCanonical();
         KitShape();
         Controls();
         Submission();
@@ -1033,6 +1035,79 @@ public static class SelfTest
         Check(!live.IsChannelling(victim), "after which it is not channelling");
         live.Advance(0.1, finished);
         Check(live.Count == 0, "and the cancelled channel is gone");
+    }
+
+    /// <summary>
+    /// The manifest must be CANONICAL: the same numbers always produce the same
+    /// bytes, whoever is walking them.
+    ///
+    /// This is the bug it exists for. An exported build enumerates a script's
+    /// properties in a different order from the editor, so the same commit
+    /// fingerprinted two different ways -- identical values, different sequence.
+    /// The ladder whitelists one hash, and a dedicated server built from that
+    /// very commit reported the other, so live ranked play would have refused
+    /// every run while every developer machine passed.
+    ///
+    /// Checked by parsing the manifest rather than by trusting the sort call,
+    /// so it stays true for any future walk that forgets to.
+    /// </summary>
+    private static void ManifestIsCanonical()
+    {
+        string manifest = Session.ContentHash.Manifest();
+        Check(manifest.Length > 0, "there is a manifest to check");
+
+        var stack = new List<List<string>>();
+        var name = new StringBuilder();
+        int unsorted = 0;
+        string firstBadPair = "none";
+
+        foreach (char c in manifest)
+        {
+            switch (c)
+            {
+                case '(':
+                    stack.Add(new List<string>());
+                    name.Clear();
+                    break;
+
+                case ')':
+                    if (stack.Count > 0) stack.RemoveAt(stack.Count - 1);
+                    name.Clear();
+                    break;
+
+                case '=':
+                    if (stack.Count > 0)
+                    {
+                        List<string> block = stack[^1];
+                        string key = name.ToString();
+                        if (block.Count > 0 && string.CompareOrdinal(block[^1], key) > 0)
+                        {
+                            if (unsorted++ == 0) firstBadPair = $"{block[^1]} before {key}";
+                        }
+
+                        block.Add(key);
+                    }
+
+                    name.Clear();
+                    break;
+
+                case ';':
+                case ',':
+                case '[':
+                case ']':
+                    name.Clear();
+                    break;
+
+                default:
+                    name.Append(c);
+                    break;
+            }
+        }
+
+        Check(unsorted == 0, $"every block lists its properties in name order (first out of order: {firstBadPair})");
+
+        // And the whole thing still reduces to a fingerprint.
+        Check(Session.ContentHash.Compute().Length == 16, "the manifest still hashes to a fingerprint");
     }
 
     // -- the shape of a kit ----------------------------------------------

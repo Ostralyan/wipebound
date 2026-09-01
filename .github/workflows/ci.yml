@@ -76,6 +76,51 @@ jobs:
           grep -q 'content_hash' server.log \
             || { echo "::error::the server never recorded a run"; exit 1; }
 
+      - name: Cache export templates
+        id: templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ env.GODOT_VERSION }}-mono
+
+      - name: Fetch export templates
+        if: steps.templates.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable/Godot_v${GODOT_VERSION}-stable_mono_export_templates.tpz"
+          curl -fsSL -o templates.tpz "$url"
+          unzip -q templates.tpz
+          version=$(cat templates/version.txt)
+          dest="$HOME/.local/share/godot/export_templates/$version"
+          mkdir -p "$dest"
+          mv templates/* "$dest"/
+
+      - name: An exported server must report the same fingerprint as the build it came from
+        run: |
+          set -euo pipefail
+          mkdir -p build/linux
+          "$GODOT" --headless --path . --export-release "Linux Server" "$PWD/build/linux/wipebound-server.x86_64"
+
+          editor=$("$GODOT" --headless --path . --quit-after 900 -- --content-hash | grep -oE '^[a-f0-9]{16}$')
+          exported=$(./build/linux/wipebound-server.x86_64 --headless -- --content-hash | grep -oE '^[a-f0-9]{16}$')
+
+          echo "editor:   $editor"
+          echo "exported: $exported"
+
+          # These disagreed once, for a reason no unit test could see: an exported
+          # build enumerates script properties in a different order than the editor,
+          # so identical content fingerprinted two ways. The ladder whitelists one
+          # hash, so live ranked play would have refused every run while every
+          # developer machine passed.
+          if [ "$editor" != "$exported" ]; then
+            echo "::error::the exported server would be refused by a ladder that whitelisted this build"
+            exit 1
+          fi
+
+          ./build/linux/wipebound-server.x86_64 --headless -- --selftest | tee export-selftest.log
+          grep -qE '\[selftest\] [0-9]+ passed, 0 failed' export-selftest.log \
+            || { echo "::error::the exported build fails its own self-test"; exit 1; }
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
