@@ -21,6 +21,7 @@ NetworkManager="*res://src/Net/NetworkManager.cs"
 NetClock="*res://src/Net/NetClock.cs"
 CombatDirector="*res://src/Combat/CombatDirector.cs"
 CommandRouter="*res://src/Combat/Commands/CommandRouter.cs"
+RunRecorder="*res://src/Session/RunRecorder.cs"
 
 [display]
 

@@ -128,6 +128,7 @@ public partial class Boss : Node3D, ICombatant
 
             if (_wipeAt <= 0.0)
             {
+                Session.RunRecorder.Instance?.CompleteAttempt(victory: false);
                 _wipeAt = now + ResetSeconds;
                 CombatDirector.Instance.CancelFor(this);
                 GD.Print($"[boss] raid wiped. Resetting in {ResetSeconds}s.");
@@ -220,6 +221,7 @@ public partial class Boss : Node3D, ICombatant
 
     private void BeginCast(Ability ability, double now)
     {
+        if (!_engaged) Session.RunRecorder.Instance?.BeginAttempt(DisplayName);
         _engaged = true;
         _readyAt[ability] = now + ability.Cooldown;
 
@@ -245,6 +247,7 @@ public partial class Boss : Node3D, ICombatant
 
         if (IsAlive) return;
 
+        Session.RunRecorder.Instance?.CompleteAttempt(victory: true);
         _resetAt = Now + ResetSeconds;
         GD.Print($"[boss] {DisplayName} defeated. Resetting in {ResetSeconds}s.");
     }

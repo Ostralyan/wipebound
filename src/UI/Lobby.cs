@@ -20,7 +20,10 @@ public partial class Lobby : PanelContainer
         _joinButton = GetNode<Button>("Margin/Rows/JoinButton");
         _leaveButton = GetNode<Button>("Margin/Rows/LeaveButton");
 
-        _hostButton.Pressed += () => NetworkManager.Instance.Host();
+        // No Host button. Whoever hosts IS the authority and can forge anything, so
+        // a player-hosted session can never produce a rankable run. Local testing
+        // uses --host, which still works and says so in the log.
+        _hostButton.Visible = false;
         _joinButton.Pressed += () => NetworkManager.Instance.Join(_address.Text.StripEdges());
         _leaveButton.Pressed += () => NetworkManager.Instance.Leave();
 
@@ -33,7 +36,7 @@ public partial class Lobby : PanelContainer
     private void RefreshButtons()
     {
         bool inSession = NetworkManager.Instance.InSession;
-        _hostButton.Visible = !inSession;
+        _hostButton.Visible = false;
         _joinButton.Visible = !inSession;
         _address.Visible = !inSession;
         _leaveButton.Visible = inSession;

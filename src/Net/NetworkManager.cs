@@ -117,7 +117,7 @@ public partial class NetworkManager : Node
         Mode = dedicated ? NetMode.DedicatedServer : NetMode.Host;
         Status(dedicated
             ? $"Dedicated server listening on {port}"
-            : $"Hosting on port {port}");
+            : $"Hosting on port {port} -- DEVELOPMENT ONLY, runs are not rankable");
         EmitSignal(SignalName.ModeChanged);
 
         // A dedicated server simulates but never gets a hero. A host does.
