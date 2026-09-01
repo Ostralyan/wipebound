@@ -49,6 +49,7 @@ public static class SelfTest
         Channelling();
         ManifestIsCanonical();
         BossPacing();
+        ClassChoice();
         KitShape();
         Controls();
         Submission();
@@ -1143,6 +1144,28 @@ public static class SelfTest
                       $"after the mechanic ends (leaves {busyUntil - mechanicEnds:0.0}s)");
             }
         }
+    }
+
+    /// <summary>
+    /// A declared class is a REQUEST. Only a modified client can send one out of
+    /// range, and there is nothing to win by it, so it is corrected rather than
+    /// punished -- the peer gets the class it would have had before it asked.
+    /// </summary>
+    private static void ClassChoice()
+    {
+        int count = System.Enum.GetValues<HeroClass>().Length;
+
+        for (int id = 0; id < count; id++)
+            Check(Net.NetworkManager.ValidClassOr(id, 0) == id, $"class {id} is a real class and is honoured");
+
+        Check(Net.NetworkManager.ValidClassOr(count, 2) == 2, "one past the end falls back");
+        Check(Net.NetworkManager.ValidClassOr(-1, 1) == 1, "a negative falls back");
+        Check(Net.NetworkManager.ValidClassOr(int.MaxValue, 0) == 0, "and so does nonsense");
+        Check(Net.NetworkManager.ValidClassOr(999, 1) == 1, "the fallback is used, not clamped to the last class");
+
+        // Every class the picker can offer must actually build a kit.
+        foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
+            Check(PlayerKit.For(hero).Count > 0, $"{hero} has a kit to be chosen");
     }
 
     // -- the shape of a kit ----------------------------------------------

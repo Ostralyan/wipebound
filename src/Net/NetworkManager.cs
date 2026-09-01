@@ -53,10 +53,49 @@ public partial class NetworkManager : Node
     /// rather than handed out twice.
     private readonly Dictionary<int, int> _slotByPeer = new();
 
+    private const string PrefsPath = "user://player.cfg";
+
+    /// <summary>
+    /// Which class this machine's player wants. Local preference only -- the
+    /// server treats an arriving one as a request, not an instruction.
+    /// </summary>
+    public int PreferredClassId { get; private set; }
+
+    public void SetPreferredClass(int classId)
+    {
+        PreferredClassId = ValidClassOr(classId, 0);
+
+        var file = new ConfigFile();
+        file.SetValue("player", "class", PreferredClassId);
+        file.Save(PrefsPath);
+    }
+
+    private void LoadPreferences()
+    {
+        var file = new ConfigFile();
+        if (file.Load(PrefsPath) != Error.Ok) return;
+        PreferredClassId = ValidClassOr(file.GetValue("player", "class", 0).AsInt32(), 0);
+    }
+
+    /// <summary>
+    /// A class id from anywhere untrusted, or the fallback.
+    ///
+    /// Out of range is not honoured and not fatal either: the peer simply gets
+    /// the class it would have got before it asked. Only a modified client can
+    /// produce one, and refusing to spawn it would punish a bug harder than a
+    /// cheat -- there is nothing to gain by picking class 99.
+    /// </summary>
+    public static int ValidClassOr(int declared, int fallback)
+    {
+        int count = System.Enum.GetValues<Combat.HeroClass>().Length;
+        return declared >= 0 && declared < count ? declared : fallback;
+    }
+
     public override void _Ready()
     {
         Instance = this;
         _heroScene = GD.Load<PackedScene>("res://src/Player/Hero.tscn");
+        LoadPreferences();
 
         Multiplayer.PeerConnected += OnPeerConnected;
         Multiplayer.PeerDisconnected += OnPeerDisconnected;
@@ -125,9 +164,10 @@ public partial class NetworkManager : Node
             : $"Hosting on port {port} -- DEVELOPMENT ONLY, runs are not rankable");
         EmitSignal(SignalName.ModeChanged);
 
-        // A dedicated server simulates but never gets a hero. A host does.
+        // A dedicated server simulates but never gets a hero. A host does, and
+        // its own preference needs no round trip to reach itself.
         if (!dedicated)
-            SpawnHeroFor(ServerPeerId);
+            SpawnHeroFor(ServerPeerId, PreferredClassId);
 
         return true;
     }
@@ -169,7 +209,7 @@ public partial class NetworkManager : Node
     // Hero spawning -- server only. MultiplayerSpawner replicates the result.
     // ---------------------------------------------------------------------
 
-    private void SpawnHeroFor(int peerId)
+    private void SpawnHeroFor(int peerId, int classId)
     {
         if (!IsServer || _heroContainer is null) return;
         if (_slotByPeer.ContainsKey(peerId)) return;
@@ -190,10 +230,11 @@ public partial class NetworkManager : Node
         // from here on.
         hero.NetPosition = spawn;
 
-        // Round robin by spawn slot. A real lobby will let people choose; until
-        // there is one, three players get three different kits rather than three
-        // copies of the same one, which is the whole point of having classes.
-        hero.ClassId = slot % System.Enum.GetValues<Combat.HeroClass>().Length;
+        // What the player asked for, falling back to round robin by spawn slot.
+        // The fallback still matters: it is what a peer gets if its declaration
+        // was out of range, and it hands three players three different kits
+        // rather than three copies of one.
+        hero.ClassId = ValidClassOr(classId, slot % System.Enum.GetValues<Combat.HeroClass>().Length);
 
         // Server-side only, and never replicated: where this hero returns on death.
         hero.SpawnPoint = spawn;
@@ -224,8 +265,33 @@ public partial class NetworkManager : Node
 
     private void OnPeerConnected(long id)
     {
+        // Deliberately does NOT spawn. A hero's kit is fixed when it is built, so
+        // the class has to be known first -- and the only peer who knows it is the
+        // one that just connected. It asks, below, and the hero appears then.
+        //
+        // A peer that never asks never gets a hero, which costs nobody but itself.
         Status($"Peer {id} connected.");
-        if (IsServer) SpawnHeroFor((int)id);
+    }
+
+    /// <summary>
+    /// "I would like to play this class." A request, not an instruction.
+    ///
+    /// This is the one client message that cannot go through CommandRouter's
+    /// single door, because every command there acts on a Hero and the entire
+    /// point of this one is that the Hero does not exist yet.
+    /// </summary>
+    [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
+    private void DeclareClass(int classId)
+    {
+        if (!IsServer) return;
+
+        int peerId = Multiplayer.GetRemoteSenderId();
+        if (peerId == 0) return;
+
+        // Asking twice does not get you a second hero.
+        if (_slotByPeer.ContainsKey(peerId)) return;
+
+        SpawnHeroFor(peerId, classId);
     }
 
     private void OnPeerDisconnected(long id)
@@ -238,6 +304,9 @@ public partial class NetworkManager : Node
     {
         _connectDeadline = 0.0;
         Status($"Connected as peer {Multiplayer.GetUniqueId()}.");
+
+        // Nothing of ours exists on the server until it knows what to build.
+        RpcId(ServerPeerId, MethodName.DeclareClass, PreferredClassId);
     }
 
     private static double Clock() => Time.GetTicksMsec() / 1000.0;
@@ -289,8 +358,15 @@ public partial class NetworkManager : Node
 
         int port = DefaultPort;
         for (int i = 0; i < args.Length - 1; i++)
+        {
             if (args[i] == "--port" && int.TryParse(args[i + 1], out int parsed))
                 port = parsed;
+
+            // A headless client has no lobby to choose in, so it says so here.
+            //   --class 2   (0 Warden, 1 Ember, 2 Verdant)
+            if (args[i] == "--class" && int.TryParse(args[i + 1], out int chosen))
+                SetPreferredClass(chosen);
+        }
 
         for (int i = 0; i < args.Length; i++)
         {

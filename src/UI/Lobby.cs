@@ -1,4 +1,5 @@
 using Godot;
+using Wipebound.Combat;
 using Wipebound.Net;
 
 namespace Wipebound.UI;
@@ -11,6 +12,22 @@ public partial class Lobby : PanelContainer
     private Button _hostButton;
     private Button _joinButton;
     private Button _leaveButton;
+    private OptionButton _classPicker;
+
+    /// <summary>
+    /// What each class is FOR, in the one place a player reads before choosing.
+    ///
+    /// The Verdant's line is not flavour: it cannot heal itself, so someone who
+    /// picks it without knowing that will conclude the game is broken rather
+    /// than that the class has a dependency.
+    /// </summary>
+    private static string Describe(HeroClass hero) => hero switch
+    {
+        HeroClass.Warden => "Warden -- shields the group, interrupts, shoves",
+        HeroClass.Ember => "Ember -- ranged damage, leaves ground behind",
+        HeroClass.Verdant => "Verdant -- healer, and cannot heal itself",
+        _ => hero.ToString(),
+    };
 
     public override void _Ready()
     {
@@ -32,6 +49,19 @@ public partial class Lobby : PanelContainer
         _joinButton.Pressed += () => NetworkManager.Instance.Join(_address.Text.StripEdges());
         _leaveButton.Pressed += () => NetworkManager.Instance.Leave();
 
+        // Built in code rather than in the scene, so the list cannot drift out of
+        // step with the HeroClass enum the kits are actually keyed on.
+        _classPicker = new OptionButton { Name = "ClassPicker" };
+        foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
+            _classPicker.AddItem(Describe(hero), (int)hero);
+
+        _classPicker.Select(NetworkManager.Instance.PreferredClassId);
+        _classPicker.ItemSelected += id => NetworkManager.Instance.SetPreferredClass((int)id);
+
+        Node rows = _hostButton.GetParent();
+        rows.AddChild(_classPicker);
+        rows.MoveChild(_classPicker, _hostButton.GetIndex());
+
         NetworkManager.Instance.StatusChanged += message => _status.Text = message;
         NetworkManager.Instance.ModeChanged += RefreshButtons;
 
@@ -42,6 +72,7 @@ public partial class Lobby : PanelContainer
     {
         bool inSession = NetworkManager.Instance.InSession;
         _hostButton.Visible = !inSession;
+        _classPicker.Visible = !inSession;
         _joinButton.Visible = !inSession;
         _address.Visible = !inSession;
         _leaveButton.Visible = inSession;
