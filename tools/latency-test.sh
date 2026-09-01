@@ -15,8 +15,8 @@
 # The supported envelope is set by NetClock.MaxCreditedRtt, which is 350ms: every
 # grace sized from a round trip stops growing there. Measured behaviour:
 #
-#     40ms  each way, 1% loss  -> clean
-#     150ms each way, 3% loss  -> clean
+#     40ms  each way, 1% loss  -> clean every run
+#     150ms each way, 3% loss  -> the edge: clean 3 runs in 4, once 172cm of 200
 #     300ms each way, 8% loss  -> billed, correctly, for being past the ceiling
 #
 #   tools/latency-test.sh [one-way-ms] [jitter-ms] [loss-%] [clients] [frames]

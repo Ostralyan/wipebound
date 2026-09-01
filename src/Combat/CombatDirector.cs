@@ -288,7 +288,7 @@ public partial class CombatDirector : Node
 
             // A caster that died or was freed mid-channel stops, exactly as a cast
             // does. Without this a dead boss keeps spraying.
-            if (owner?.Node is null || !GodotObject.IsInstanceValid(owner.Node) || !owner.IsAlive)
+            if (!Combatants.Placed(owner) || !owner.IsAlive)
             {
                 channel.Cancelled = true;
                 continue;
@@ -520,9 +520,7 @@ public partial class CombatDirector : Node
 
         _casts.Process(
             now,
-            cast => cast.Caster?.Node is not null
-                    && GodotObject.IsInstanceValid(cast.Caster.Node)
-                    && cast.Caster.IsAlive,
+            cast => Combatants.Placed(cast.Caster) && cast.Caster.IsAlive,
             cast => Resolve(cast, now));
     }
 

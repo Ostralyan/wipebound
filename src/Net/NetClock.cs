@@ -43,10 +43,15 @@ public partial class NetClock : Node
     /// acknowledgement -- stops growing here, so a player further away than this
     /// starts being billed for movement they made honestly.
     ///
-    /// Measured with tools/latency-test.sh: 300ms round trip with 3% loss is
-    /// clean, 600ms with 8% is not. Raising this widens the ceiling and the cheat
-    /// window together, and at that distance a 1.6s telegraph leaves under a
-    /// second to react, so the fight is lost before the ladder is.
+    /// Measured with tools/latency-test.sh, four runs each. 80ms with 1% loss is
+    /// clean every time. 300ms with 3% loss is clean three runs in four and once
+    /// billed 172cm of 200 -- it is the EDGE of the envelope, not the middle of
+    /// it, because it sits just under this ceiling. 600ms with 8% is billed
+    /// heavily and correctly.
+    ///
+    /// Raising this widens the ceiling and the cheat window together, and at that
+    /// distance a 1.6s telegraph leaves under a second to react, so the fight is
+    /// lost before the ladder is.
     /// </summary>
     public const double MaxCreditedRtt = 0.35;
 

@@ -86,6 +86,23 @@ public static class Combatants
     /// concrete types to find them.
     public const string GroupName = "combatant";
 
+    /// <summary>
+    /// Whether this combatant's position can safely be read from its node.
+    ///
+    /// IsInstanceValid alone is not enough, and the difference is not theoretical.
+    /// A replicated node stays valid for a while after the engine takes it out of
+    /// the tree -- which is what a server-first disconnect does to every hero at
+    /// once -- and reading GlobalPosition in that window is an error with our own
+    /// name on the stack.
+    ///
+    /// Named so the check is one idea in one place. It was found in the camera,
+    /// fixed there, and was in three other places doing exactly the same thing.
+    /// </summary>
+    public static bool Placed(ICombatant combatant)
+        => combatant?.Node is not null
+           && GodotObject.IsInstanceValid(combatant.Node)
+           && combatant.Node.IsInsideTree();
+
     public static bool Matches(ICombatant candidate, ICombatant caster, TargetFilter filter) => filter switch
     {
         TargetFilter.Enemies => candidate.Team != caster.Team,
@@ -201,7 +218,7 @@ public static class Combatants
             if (node is not ICombatant candidate || !candidate.IsAlive) continue;
             if (caster is not null && !Matches(candidate, caster, filter)) continue;
 
-            if (candidate.Node is null || !GodotObject.IsInstanceValid(candidate.Node)) continue;
+            if (!Placed(candidate)) continue;
 
             Vector3 offset = candidate.Node.GlobalPosition - groundPoint;
             offset.Y = 0f;
