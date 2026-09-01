@@ -26,6 +26,11 @@ public sealed class CastInstance
 
     public Ability Ability { get; init; }
     public ICombatant Caster { get; init; }
+
+    /// For AtTargetUnit abilities: who this was aimed at. Resolved again at the
+    /// moment it lands, so a targeted heal follows the person rather than the
+    /// ground they were standing on when it was cast.
+    public int TargetId { get; init; }
     public TelegraphArea Area { get; init; }
     public double StartAt { get; init; }
     public double CastEndAt { get; init; }
@@ -263,7 +268,7 @@ public partial class CombatDirector : Node
     /// Start a cast. The caller is responsible for having already validated it --
     /// cost, cooldown, silence. By the time it reaches here it is happening.
     /// </summary>
-    public CastInstance Begin(ICombatant caster, Ability ability, Vector3 aimPoint)
+    public CastInstance Begin(ICombatant caster, Ability ability, Vector3 aimPoint, int targetId = 0)
     {
         if (!IsServer || ability is null || caster is null) return null;
 
@@ -275,6 +280,7 @@ public partial class CombatDirector : Node
         {
             Id = _nextId++,
             Ability = ability,
+            TargetId = targetId,
             Caster = caster,
             Area = area,
             StartAt = now,
@@ -333,10 +339,11 @@ public partial class CombatDirector : Node
     private void Resolve(CastInstance cast, double now)
     {
         Ability ability = cast.Ability;
+        TelegraphArea area = AreaAt(cast);
         List<ICombatant> candidates = Combatants.Living(this, cast.Caster, ability.Affects);
         var targets = new List<ICombatant>();
 
-        GD.Print($"[resolve] {cast.Caster.CombatName} :: {ability.DisplayName} at {Flat(cast.Area.Center)}");
+        GD.Print($"[resolve] {cast.Caster.CombatName} :: {ability.DisplayName} at {Flat(area.Center)}");
 
         foreach (ICombatant candidate in candidates)
         {
@@ -344,7 +351,7 @@ public partial class CombatDirector : Node
             // is negative inside and positive outside, in metres -- so this line is
             // also how you check the shader against the maths: stand on the edge and
             // watch the number cross zero.
-            float field = cast.Area.Field(candidate.CombatPosition);
+            float field = area.Field(candidate.CombatPosition);
             bool hit = field <= 0f;
             if (hit) targets.Add(candidate);
 
@@ -356,7 +363,7 @@ public partial class CombatDirector : Node
         {
             AbilityName = ability.DisplayName,
             Caster = cast.Caster,
-            Area = cast.Area,
+            Area = area,
             Targets = targets,
             Candidates = candidates,
             Now = now,
@@ -368,6 +375,24 @@ public partial class CombatDirector : Node
             GD.Print($"[resolve]   {effect.Describe(context)}");
             effect.Resolve(context);
         }
+    }
+
+    /// <summary>
+    /// Where the ability actually lands.
+    ///
+    /// Frozen for every footprint that is a PLACE, because a telegraph rendered on
+    /// a client must resolve where it was drawn. Recomputed for the one footprint
+    /// that is a PERSON: a targeted heal follows its target, and a target who has
+    /// died since falls back to the ground they were on rather than vanishing.
+    /// </summary>
+    private TelegraphArea AreaAt(CastInstance cast)
+    {
+        if (!cast.Ability.RequiresTarget) return cast.Area;
+
+        ICombatant target = Combatants.ById(this, cast.TargetId);
+        if (target is null || !target.IsAlive) return cast.Area;
+
+        return cast.Ability.BuildArea(cast.Caster.CombatPosition, target.CombatPosition);
     }
 
     /// <summary>

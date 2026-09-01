@@ -13,6 +13,17 @@ public enum AbilityOrigin
 
     /// Starts at the caster and points at the aim. Cones, lanes, beams.
     FromCasterTowardAim = 2,
+
+    /// <summary>
+    /// Lands on a designated combatant -- whoever the cursor was over.
+    ///
+    /// The ONE origin that does not freeze. Every other footprint is a place, and a
+    /// place cannot move; this one is a contract with a person, and a heal that
+    /// landed where somebody used to be standing would be a bug rather than a
+    /// dodge. Radius still applies, so a single-target heal and one that splashes
+    /// to nearby allies differ by a number.
+    /// </summary>
+    AtTargetUnit = 3,
 }
 
 /// <summary>How an NPC caster chooses its aim point. Players supply their own.</summary>
@@ -87,10 +98,15 @@ public partial class Ability : Resource
     /// changes again -- a telegraph that keeps tracking a moving caster renders
     /// somewhere different from where the server resolves it.
     /// </summary>
+    /// <summary>True when this ability is meaningless without somebody to aim at.</summary>
+    public bool RequiresTarget => Origin == AbilityOrigin.AtTargetUnit;
+
     public TelegraphArea BuildArea(Vector3 casterPosition, Vector3 aimPoint)
     {
         float halfAngle = Mathf.DegToRad(ConeAngleDegrees) * 0.5f;
-        Vector3 centre = Origin == AbilityOrigin.AtAimPoint ? aimPoint : casterPosition;
+        Vector3 centre = Origin is AbilityOrigin.AtAimPoint or AbilityOrigin.AtTargetUnit
+            ? aimPoint
+            : casterPosition;
         float facing = 0f;
 
         if (Origin == AbilityOrigin.FromCasterTowardAim)

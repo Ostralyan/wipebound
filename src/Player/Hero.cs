@@ -50,9 +50,15 @@ public partial class Hero : CharacterBody3D, ICombatant
     [ExportGroup("Stats")]
     [Export] public float ManaRegenPerSecond = 7f;
 
-    /// Left empty, PlayerKit fills this in. Assign abilities here to override.
     [ExportGroup("Abilities")]
+    /// Assigned by the server at spawn and carried on the spawn packet, so every
+    /// peer knows which kit to build before anything else runs.
+    [Export] public int ClassId { get; set; }
+
+    /// Left empty, PlayerKit fills this in from ClassId.
     [Export] public Godot.Collections.Array<Ability> Kit { get; set; } = new();
+
+    public HeroClass Class => (HeroClass)ClassId;
 
     // --- Replicated by MoveSync. Authority: the owning client. ---
     [Export] public Vector3 NetPosition { get; set; }
@@ -193,7 +199,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         AddToGroup(GroupName);
         AddToGroup(Combatants.GroupName);
 
-        if (Kit.Count == 0) Kit = PlayerKit.Build();
+        if (Kit.Count == 0) Kit = PlayerKit.For(Class);
         _serverCooldowns.Resize(Kit.Count);
         _clientCooldowns.Resize(Kit.Count);
 
@@ -559,7 +565,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         // is shielded, slowed or carrying a bomb is what lets anyone react to it;
         // a buff bar only you can read helps only you.
         _label.Text = IsAlive
-            ? $"{PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}{StatusLine()}"
+            ? $"{PlayerKit.NameOf(Class)} {PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}{StatusLine()}"
             : $"{PeerId}\nDEAD";
 
         _label.Modulate = !IsAlive ? new Color("64748b")
@@ -657,6 +663,17 @@ public partial class Hero : CharacterBody3D, ICombatant
         Ability ability = AbilityAt(slot);
         if (ability is null) return;
 
+        // Whatever the cursor is over, if this ability wants a person. There is no
+        // selected target anywhere in this game: you aim with the mouse, always,
+        // and what differs between abilities is only what the cursor resolves to.
+        int targetId = 0;
+        if (ability.RequiresTarget)
+        {
+            ICombatant hovered = Combatants.UnderCursor(this, aimPoint, this, ability.Affects);
+            if (hovered is null) return;
+            targetId = hovered.CombatId;
+        }
+
         // Optimistic, so the button responds on the frame you pressed it. The
         // server's acknowledgement either confirms this or clears it.
         _clientCooldowns.Start(slot, Now, ability.Cooldown);
@@ -665,6 +682,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         {
             ["slot"] = slot,
             ["aim"] = aimPoint,
+            ["target"] = targetId,
         });
     }
 

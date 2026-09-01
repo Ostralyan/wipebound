@@ -13,7 +13,9 @@ public sealed class CastAbilityCommand : ClientCommand
 {
     private int _slot;
     private Vector3 _aimPoint;
+    private int _targetId;
     private Ability _ability;
+    private ICombatant _target;
 
     /// Sanity bound so a hostile slot index cannot be used to probe anything.
     private const int MaxSlot = 15;
@@ -31,6 +33,12 @@ public sealed class CastAbilityCommand : ClientCommand
 
         _slot = (int)rawSlot;
         _aimPoint = (Vector3)rawAim;
+
+        // Optional: only abilities aimed at a person carry one, and the server
+        // decides whether the answer is allowed regardless of what arrives.
+        _targetId = payload.TryGetValue("target", out Variant rawTarget) && rawTarget.VariantType == Variant.Type.Int
+            ? (int)rawTarget
+            : 0;
 
         if (_slot < 0 || _slot > MaxSlot) return false;
 
@@ -51,6 +59,25 @@ public sealed class CastAbilityCommand : ClientCommand
         if (!context.Hero.IsAbilityReady(_slot, context.Now)) { reason = "on cooldown"; return false; }
         if (!context.Hero.ManaPool.CanAfford(_ability.ManaCost)) { reason = "not enough mana"; return false; }
 
+        // A designated target is untrusted input like everything else: it must
+        // exist, be alive, be somebody this ability is allowed to touch, and be
+        // close enough. "Heal the enemy boss" and "reach across the map" are both
+        // expressible in the payload and neither survives here.
+        if (_ability.RequiresTarget)
+        {
+            _target = Combatants.ById(context.Hero, _targetId);
+
+            if (_target is null || !_target.IsAlive) { reason = "no such target"; return false; }
+            if (!Combatants.Matches(_target, context.Hero, _ability.Affects)) { reason = "not a legal target"; return false; }
+
+            float reach = context.Hero.CombatPosition.DistanceTo(_target.CombatPosition);
+            if (_ability.Range > 0f && reach > _ability.Range + 1.0f)
+            {
+                reason = $"target out of range ({reach:0.0}m)";
+                return false;
+            }
+        }
+
         // Range is measured from the VALIDATED position, never the claimed one.
         // The small tolerance absorbs the sub-tick difference between where the
         // client aimed and where the server thinks it was standing.
@@ -69,7 +96,7 @@ public sealed class CastAbilityCommand : ClientCommand
         context.Hero.ManaPool.TrySpend(_ability.ManaCost);
         context.Hero.StartCooldown(_slot, context.Now);
 
-        CombatDirector.Instance.Begin(context.Hero, _ability, _aimPoint);
+        CombatDirector.Instance.Begin(context.Hero, _ability, _aimPoint, _targetId);
 
         // Tell the owner what its real cooldown is, so its button stops guessing.
         context.Hero.AcknowledgeCast(_slot, context.Hero.AbilityReadyAt(_slot));

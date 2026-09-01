@@ -15,6 +15,10 @@ public enum TargetFilter
     Enemies = 0,
     Allies = 1,
     All = 2,
+
+    /// Everyone on your side except you. The whole of a support role's dependency
+    /// lives in this value: a healer who cannot reach themselves needs somebody.
+    OtherAllies = 3,
 }
 
 /// <summary>
@@ -86,6 +90,7 @@ public static class Combatants
     {
         TargetFilter.Enemies => candidate.Team != caster.Team,
         TargetFilter.Allies => candidate.Team == caster.Team,
+        TargetFilter.OtherAllies => candidate.Team == caster.Team && !ReferenceEquals(candidate, caster),
         _ => true,
     };
 
@@ -155,6 +160,49 @@ public static class Combatants
         float landed = target.HealthPool.Restore(amount);
         if (source?.Contribution is not null) source.Contribution.HealingDone += landed;
         return landed;
+    }
+
+    /// <summary>Find a combatant by the identity that travels over the wire.</summary>
+    public static ICombatant ById(Node context, int combatId)
+    {
+        foreach (Node node in context.GetTree().GetNodesInGroup(GroupName))
+            if (node is ICombatant combatant && combatant.CombatId == combatId)
+                return combatant;
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whatever the cursor is over, for abilities aimed at a person rather than a
+    /// place.
+    ///
+    /// Nearest-to-the-ground-point rather than a physics pick, deliberately: the
+    /// boss has no collision body at all, and a pick radius degrades into "roughly
+    /// where you meant" instead of failing outright. The client resolving this is a
+    /// convenience; the server validates the answer independently.
+    /// </summary>
+    public static ICombatant UnderCursor(Node context, Vector3 groundPoint, ICombatant caster,
+                                         TargetFilter filter, float pickRadius = 2.5f)
+    {
+        ICombatant best = null;
+        float bestDistance = pickRadius * pickRadius;
+
+        foreach (Node node in context.GetTree().GetNodesInGroup(GroupName))
+        {
+            if (node is not ICombatant candidate || !candidate.IsAlive) continue;
+            if (caster is not null && !Matches(candidate, caster, filter)) continue;
+
+            Vector3 offset = candidate.CombatPosition - groundPoint;
+            offset.Y = 0f;
+
+            float distance = offset.LengthSquared();
+            if (distance > bestDistance) continue;
+
+            best = candidate;
+            bestDistance = distance;
+        }
+
+        return best;
     }
 
     public static ICombatant ByDistance(IReadOnlyList<ICombatant> from, Vector3 origin, bool nearest)

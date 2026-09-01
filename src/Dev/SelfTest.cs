@@ -42,6 +42,7 @@ public static class SelfTest
         Cooldowns();
         CastQueueing();
         Hazards();
+        Classes();
         CommandPayloads();
         SpawnAllocation();
 
@@ -645,7 +646,7 @@ public static class SelfTest
         // The reset delay is shorter than the longest ability cooldown, which is
         // exactly why cooldowns cannot be allowed to survive a wipe.
         float longest = 0f;
-        foreach (Ability ability in PlayerKit.Build())
+        foreach (Ability ability in PlayerKit.For(HeroClass.Ember))
             longest = Mathf.Max(longest, ability.Cooldown);
         // Freed explicitly: a Node built with new and never parented leaks at exit,
         // and a test suite that leaks is a test suite nobody trusts about leaks.
@@ -783,6 +784,71 @@ public static class SelfTest
         TelegraphArea area = Fire(100.0).Area;
         Check(area.Contains(new Vector3(3f, 0f, 0f)), "a hazard catches what stands in it");
         Check(!area.Contains(new Vector3(9f, 0f, 0f)), "and not what stands clear");
+    }
+
+    // -- classes and aiming ----------------------------------------------
+
+    private static void Classes()
+    {
+        var alice = new Dummy { CombatId = 1, CombatName = "alice" };
+        var bob = new Dummy { CombatId = 2, CombatName = "bob" };
+        var boss = new Dummy { CombatId = -1, CombatName = "boss", Team = Team.Enemies };
+
+        Check(Combatants.Matches(bob, alice, TargetFilter.OtherAllies), "an ally is a legal other-ally");
+        Check(!Combatants.Matches(alice, alice, TargetFilter.OtherAllies), "you are not your own other-ally");
+        Check(!Combatants.Matches(boss, alice, TargetFilter.OtherAllies), "an enemy is never an other-ally");
+        Check(Combatants.Matches(alice, alice, TargetFilter.Allies), "plain Allies still includes yourself");
+
+        // Only one origin needs a person; the rest are places.
+        foreach (AbilityOrigin origin in System.Enum.GetValues<AbilityOrigin>())
+        {
+            var probe = new Ability { Origin = origin };
+            Check(probe.RequiresTarget == (origin == AbilityOrigin.AtTargetUnit),
+                  $"{origin} requires a target only when it is AtTargetUnit");
+        }
+
+        // A targeted footprint lands on the person, not on the caster.
+        var targeted = new Ability { Origin = AbilityOrigin.AtTargetUnit, Shape = TelegraphShape.Circle, Radius = 0.6f };
+        TelegraphArea onThem = targeted.BuildArea(new Vector3(5f, 0f, 5f), new Vector3(-9f, 0f, 3f));
+        Near(onThem.Center.X, -9f, "a targeted ability centres on its target");
+        Check(onThem.Contains(new Vector3(-9f, 0f, 3f)), "and catches them");
+        Check(!onThem.Contains(new Vector3(-6f, 0f, 3f)), "and nobody standing three metres away");
+
+        // Every class is distinct, and every ability in every kit is well formed.
+        var seen = new List<string>();
+        foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
+        {
+            var kit = PlayerKit.For(hero);
+            Check(kit.Count >= 4, $"{hero} has a kit");
+
+            foreach (Ability ability in kit)
+            {
+                Check(!string.IsNullOrEmpty(ability.Id), $"{hero} ability has an id");
+                Check(ability.Effects.Count > 0, $"{hero} {ability.DisplayName} does something");
+                Check(!ability.RequiresTarget || ability.Range > 0f,
+                      $"{hero} {ability.DisplayName} bounds its reach if it targets a person");
+                seen.Add(ability.Id);
+            }
+        }
+
+        Check(seen.Count == new HashSet<string>(seen).Count, "no two abilities share an id");
+
+        // THE DESIGN, ASSERTED. The Verdant depends on somebody else, and that is
+        // the reason for having classes at all -- so it is a test, not a comment
+        // somebody can quietly contradict.
+        bool foundHeal = false;
+        foreach (Ability ability in PlayerKit.For(HeroClass.Verdant))
+        {
+            bool heals = false;
+            foreach (AbilityEffect effect in ability.Effects) heals |= effect is HealEffect;
+            if (!heals) continue;
+
+            foundHeal = true;
+            Check(ability.Affects == TargetFilter.OtherAllies,
+                  $"Verdant's {ability.DisplayName} cannot be turned on itself");
+        }
+
+        Check(foundHeal, "the Verdant actually heals somebody");
     }
 
     // -- command payloads ------------------------------------------------

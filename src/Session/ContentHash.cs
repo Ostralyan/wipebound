@@ -51,7 +51,9 @@ public static class ContentHash
         var path = new HashSet<ulong>();
 
         foreach (BossPhase phase in DefaultEncounter.Build()) Append(builder, phase, 0, path);
-        foreach (Ability ability in PlayerKit.Build()) Append(builder, ability, 0, path);
+        foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
+            foreach (Ability ability in PlayerKit.For(hero))
+                Append(builder, ability, 0, path);
         Append(builder, MinionKit.Claw(), 0, path);
 
         // Statuses are balance too: a vulnerability multiplier or a shield size

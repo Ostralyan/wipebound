@@ -190,12 +190,18 @@ public partial class NetworkManager : Node
         // from here on.
         hero.NetPosition = spawn;
 
+        // Round robin by spawn slot. A real lobby will let people choose; until
+        // there is one, three players get three different kits rather than three
+        // copies of the same one, which is the whole point of having classes.
+        hero.ClassId = slot % System.Enum.GetValues<Combat.HeroClass>().Length;
+
         // Server-side only, and never replicated: where this hero returns on death.
         hero.SpawnPoint = spawn;
 
         _slotByPeer[peerId] = slot;
         _heroContainer.AddChild(hero, true);
-        GD.Print($"[net] spawned hero for peer {peerId} in slot {slot} at {hero.NetPosition.Round()}");
+        GD.Print($"[net] spawned hero for peer {peerId} in slot {slot} as " +
+                 $"{Combat.PlayerKit.NameOf(hero.Class)} at {hero.NetPosition.Round()}");
     }
 
     private void DespawnHeroFor(int peerId)

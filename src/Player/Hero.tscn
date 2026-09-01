@@ -52,6 +52,9 @@ properties/8/replication_mode = 2
 properties/9/path = NodePath(".:Overreach")
 properties/9/spawn = true
 properties/9/replication_mode = 2
+properties/10/path = NodePath(".:ClassId")
+properties/10/spawn = true
+properties/10/replication_mode = 0
 
 [node name="Hero" type="CharacterBody3D"]
 collision_layer = 2

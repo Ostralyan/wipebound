@@ -31,7 +31,7 @@ godot -- --host --port 7788           # any of the above, on another port
 | Input | Does |
 | --- | --- |
 | Right-click | Move your hero there |
-| `Q` `W` `E` `R` `1` | Abilities: Strike, Lance, Aegis, Rupture, Rebuke |
+| `Q` `W` `E` `R` | Abilities, which differ by class |
 | Arrow keys / middle-drag | Pan the camera |
 | Mouse wheel | Zoom |
 | `Space` | Re-lock the camera to your hero |
