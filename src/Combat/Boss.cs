@@ -237,15 +237,37 @@ public partial class Boss : Node3D, ICombatant
     // Warn -- handed to the director, which telegraphs and resolves it
     // ---------------------------------------------------------------------
 
+    /// <summary>
+    /// How long one ability keeps the boss busy: the wind-up, the channel if it
+    /// has one, and the breathing room owed afterwards.
+    ///
+    /// Recovery is booked from the moment the mechanic actually ENDS, not from
+    /// its start, so a long wind-up does not eat the pause after it. Channels
+    /// made that distinction matter: a sweep resolves when its telegraph fills
+    /// and then keeps going for seven more seconds, so a schedule that stopped
+    /// at CastSeconds expired four to six seconds before the mechanic finished.
+    /// Nothing overlapped -- the director refuses a second cast while one is in
+    /// flight -- but the pause was already spent, so the boss opened its next
+    /// mechanic on the frame the sweep ended, with no recovery at all after the
+    /// longest and most movement-hungry thing in the fight.
+    ///
+    /// Pure and static so an encounter's pacing can be checked without standing
+    /// a boss up.
+    /// </summary>
+    public static double OccupiedFor(Ability ability, double recoverySeconds)
+    {
+        if (ability is null) return recoverySeconds;
+
+        return ability.CastSeconds + ability.ChannelSeconds + recoverySeconds;
+    }
+
     private void BeginCast(Ability ability, double now)
     {
         if (!_engaged) Session.RunRecorder.Instance?.BeginAttempt(DisplayName);
         _engaged = true;
         _readyAt[ability] = now + ability.Cooldown;
 
-        // Recovery is booked from the cast's end, not its start, so a long wind-up
-        // does not eat the breathing room after it.
-        _nextCastAt = now + ability.CastSeconds + (CurrentPhase?.RecoverySeconds ?? 2.0);
+        _nextCastAt = now + OccupiedFor(ability, CurrentPhase?.RecoverySeconds ?? 2.0);
 
         Vector3 aim = AimPointFor(ability, out int targetId);
         CombatDirector.Instance.Begin(this, ability, aim, targetId);

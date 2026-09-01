@@ -48,6 +48,7 @@ public static class SelfTest
         DeadTargetsStayDead();
         Channelling();
         ManifestIsCanonical();
+        BossPacing();
         KitShape();
         Controls();
         Submission();
@@ -1108,6 +1109,40 @@ public static class SelfTest
 
         // And the whole thing still reduces to a fingerprint.
         Check(Session.ContentHash.Compute().Length == 16, "the manifest still hashes to a fingerprint");
+    }
+
+    /// <summary>
+    /// A mechanic must be FOLLOWED by its recovery, not overlapped by it.
+    ///
+    /// The boss books its next cast when it starts the current one, from a
+    /// predicted duration. A channel runs for seconds after the telegraph fills,
+    /// so a prediction that stops at the wind-up expires while the channel is
+    /// still going -- and the moment it ends the boss acts again with no pause at
+    /// all, after the longest and most movement-intensive thing it does.
+    /// </summary>
+    private static void BossPacing()
+    {
+        var plain = new Ability { CastSeconds = 2f };
+        Near((float)Boss.OccupiedFor(plain, 2.4), 4.4f, "an ordinary cast books its wind-up plus recovery");
+
+        var channelled = new Ability { CastSeconds = 1.6f, ChannelSeconds = 7f };
+        Near((float)Boss.OccupiedFor(channelled, 2.4), 11f,
+             "a channel books the seconds it actually runs for as well");
+
+        // The property that matters, stated as the players experience it: whatever
+        // the ability is, there is still a full recovery left AFTER it finishes.
+        foreach (BossPhase phase in DefaultEncounter.Build())
+        {
+            foreach (Ability ability in phase.Abilities)
+            {
+                double busyUntil = Boss.OccupiedFor(ability, phase.RecoverySeconds);
+                double mechanicEnds = ability.CastSeconds + ability.ChannelSeconds;
+
+                Check(busyUntil - mechanicEnds >= phase.RecoverySeconds - 0.001,
+                      $"{phase.Name}'s {ability.DisplayName} leaves its full {phase.RecoverySeconds}s recovery " +
+                      $"after the mechanic ends (leaves {busyUntil - mechanicEnds:0.0}s)");
+            }
+        }
     }
 
     // -- the shape of a kit ----------------------------------------------
