@@ -177,13 +177,26 @@ public partial class EncounterHud : Control
         foreach (Node child in _abilityRow.GetChildren()) child.QueueFree();
         _slots.Clear();
 
+        // Two rows, split by what the buttons are FOR: the six you press
+        // constantly on top, the situational tools and the two panic buttons and
+        // the ultimate below. That is not decoration -- twelve panels at their
+        // old 124px minimum came to 1488px on a 1280px viewport, so the ultimate
+        // was pushed off the edge of the screen. Splitting by role fixes the
+        // overflow and makes the shape of the kit legible at a glance.
+        var stack = new VBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+        var rotational = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+        var everythingElse = new HBoxContainer { MouseFilter = MouseFilterEnum.Ignore };
+        stack.AddChild(rotational);
+        stack.AddChild(everythingElse);
+        _abilityRow.AddChild(stack);
+
         for (int i = 0; i < _hero.Kit.Count; i++)
         {
             Ability ability = _hero.Kit[i];
 
             var panel = new PanelContainer
             {
-                CustomMinimumSize = new Vector2(124, 46),
+                CustomMinimumSize = new Vector2(118, 46),
                 MouseFilter = MouseFilterEnum.Ignore,
             };
 
@@ -208,8 +221,13 @@ public partial class EncounterHud : Control
             rows.AddChild(title);
             rows.AddChild(cooldown);
             panel.AddChild(rows);
-            _abilityRow.AddChild(panel);
 
+            // Bucketed by role rather than by index, so a reordered kit still
+            // lands in the right row.
+            (ability.Role == AbilityRole.Rotational ? rotational : everythingElse).AddChild(panel);
+
+            // Added in kit order regardless of which row it went to, so slot i
+            // here is still ability i when cooldowns tick.
             _slots.Add(new SlotView { Root = panel, Title = title, Cooldown = cooldown });
         }
     }
