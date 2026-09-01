@@ -32,6 +32,10 @@ public static class SelfTest
         MovementBudget();
         StatusEncoding();
         Resources();
+        PerSourceStatuses();
+        Shields();
+        Dispels();
+        ExpiryEffects();
         Cooldowns();
         CommandPayloads();
         SpawnAllocation();
@@ -189,6 +193,202 @@ public static class SelfTest
         var silenced = new StatusTracker();
         silenced.Apply(StatusLibrary.Get(StatusLibrary.Silenced), null, 100.0);
         Check(silenced.Silenced, "silence flag aggregates");
+    }
+
+    /// <summary>A combatant with no scene behind it, so status logic is testable.</summary>
+    private sealed class Dummy : ICombatant
+    {
+        public string CombatName { get; init; } = "dummy";
+        public int CombatId { get; init; }
+        public Team Team { get; init; } = Team.Players;
+        public Vector3 CombatPosition => Vector3.Zero;
+        public bool IsAlive => !HealthPool.IsEmpty;
+        public ResourcePool HealthPool { get; } = new(1000f);
+        public StatusTracker Status { get; } = new();
+        public Node3D Node => null;
+
+        public void ApplyDamage(float amount, ICombatant source, string label)
+            => HealthPool.Drain(Combatants.ResolveIncoming(amount, source, this));
+
+        public void Heal(float amount, ICombatant source, string label) => HealthPool.Restore(amount);
+        public void Displace(Vector3 destination, float travelSeconds) { }
+        public void OnEncounterReset() { }
+    }
+
+    private static StatusEffect Custom(string id, System.Action<StatusEffect> configure)
+    {
+        var definition = new StatusEffect { Id = id, DisplayName = id, Duration = 10f };
+        configure(definition);
+        StatusLibrary.Register(definition);
+        return definition;
+    }
+
+    // -- per-source instances --------------------------------------------
+
+    private static void PerSourceStatuses()
+    {
+        var alice = new Dummy { CombatId = 11 };
+        var bob = new Dummy { CombatId = 22 };
+        var target = new Dummy { CombatId = 99, Team = Team.Enemies };
+
+        StatusEffect burning = StatusLibrary.Get(StatusLibrary.Burning);
+        Check(burning.Scope == StatusScope.PerSource, "burning is per caster");
+
+        target.Status.Apply(burning, alice, 100.0);
+        target.Status.Apply(burning, bob, 100.0);
+        Check(target.Status.Active.Count == 2, "two casters hold two instances");
+        Check(target.Status.Active[0].SourceId != target.Status.Active[1].SourceId,
+              "instances remember who applied them");
+
+        // Each caster's damage-over-time ticks. Two burns hurt twice as much.
+        float before = target.HealthPool.Current;
+        target.Status.Tick(target, 101.5);
+        Near(before - target.HealthPool.Current, 14f, "both instances tick independently");
+
+        // A Shared status collapses to one instance no matter who applies it,
+        // which is the narrower behaviour reachable from the wider model.
+        var shared = new Dummy { CombatId = 77, Team = Team.Enemies };
+        StatusEffect crippled = StatusLibrary.Get(StatusLibrary.Crippled);
+        Check(crippled.Scope == StatusScope.Shared, "crippled is shared");
+        shared.Status.Apply(crippled, alice, 100.0);
+        shared.Status.Apply(crippled, bob, 100.0);
+        Check(shared.Status.Active.Count == 1, "a shared status stays a single instance");
+
+        // Modifiers must not multiply once per caster, or a raid stacking the same
+        // debuff would scale it by however many people happened to press the button.
+        StatusEffect vuln = Custom("test_vuln", d =>
+        {
+            d.Scope = StatusScope.PerSource;
+            d.DamageTakenMultiplier = 1.5f;
+        });
+        var victim = new Dummy { CombatId = 55, Team = Team.Enemies };
+        victim.Status.Apply(vuln, alice, 100.0);
+        Near(victim.Status.DamageTakenMultiplier, 1.5f, "one caster's vulnerability");
+        victim.Status.Apply(vuln, bob, 100.0);
+        Near(victim.Status.DamageTakenMultiplier, 1.5f, "a second caster does not multiply it again");
+
+        // Source and shield survive the wire.
+        var mirror = new StatusTracker();
+        mirror.Decode(target.Status.Encoded);
+        Check(mirror.Active.Count == 2, "both instances survive encoding");
+        Check(mirror.Active[0].SourceId == target.Status.Active[0].SourceId, "source id survives encoding");
+
+        // Older, shorter entries must still decode, so the format can grow.
+        var legacy = new StatusTracker();
+        legacy.Decode($"{StatusLibrary.Crippled}:500:1");
+        Check(legacy.Active.Count == 1, "a three-field entry still decodes");
+        Near(legacy.MoveSpeedMultiplier, 0.55f, "a truncated entry still aggregates");
+    }
+
+    // -- shields ---------------------------------------------------------
+
+    private static void Shields()
+    {
+        var hero = new Dummy();
+        StatusEffect warded = StatusLibrary.Get(StatusLibrary.Warded);
+        Check(warded.AbsorbAmount > 0f, "warded is a shield, not a multiplier");
+
+        hero.Status.Apply(warded, hero, 100.0);
+        Near(hero.Status.AbsorbRemaining, 45f, "shield starts at full strength");
+
+        hero.ApplyDamage(20f, null, "test");
+        Near(hero.HealthPool.Current, 1000f, "a shield takes the hit instead of health");
+        Near(hero.Status.AbsorbRemaining, 25f, "the shield is spent down");
+
+        hero.ApplyDamage(40f, null, "test");
+        Near(hero.HealthPool.Current, 985f, "damage beyond the shield reaches health");
+        Check(hero.Status.Active.Count == 0, "a spent shield disappears rather than lingering at zero");
+
+        // Shields sum, because two shields really are more shield.
+        var stacked = new Dummy();
+        StatusEffect other = Custom("test_shield", d => { d.AbsorbAmount = 30f; d.Beneficial = true; });
+        stacked.Status.Apply(warded, stacked, 100.0);
+        stacked.Status.Apply(other, stacked, 100.0);
+        Near(stacked.Status.AbsorbRemaining, 75f, "shields from different statuses add");
+
+        // Reapplying restores, or refreshing would be worse than waiting.
+        var refreshed = new Dummy();
+        refreshed.Status.Apply(warded, refreshed, 100.0);
+        refreshed.ApplyDamage(30f, null, "test");
+        Near(refreshed.Status.AbsorbRemaining, 15f, "shield partially spent");
+        refreshed.Status.Apply(warded, refreshed, 105.0);
+        Near(refreshed.Status.AbsorbRemaining, 45f, "reapplying restores the shield");
+
+        // Mitigation applies before absorption: a shield soaks what you would
+        // actually have taken.
+        var mitigated = new Dummy();
+        StatusEffect half = Custom("test_half", d => { d.DamageTakenMultiplier = 0.5f; d.Beneficial = true; });
+        mitigated.Status.Apply(half, mitigated, 100.0);
+        mitigated.Status.Apply(other, mitigated, 100.0);
+        mitigated.ApplyDamage(40f, null, "test");
+        Near(mitigated.Status.AbsorbRemaining, 10f, "the shield soaks the mitigated amount, not the raw one");
+    }
+
+    // -- dispel ----------------------------------------------------------
+
+    private static void Dispels()
+    {
+        var hero = new Dummy();
+        hero.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), null, 100.0);
+        hero.Status.Apply(StatusLibrary.Get(StatusLibrary.Haste), null, 100.0);
+
+        Check(hero.Status.Dispel(beneficial: false, count: 1) == 1, "a debuff is cleansed");
+        Check(hero.Status.Has(StatusLibrary.Haste), "cleansing a debuff leaves buffs alone");
+        Near(hero.Status.MoveSpeedMultiplier, 1.45f, "aggregates update after a cleanse");
+
+        var stubborn = new Dummy();
+        StatusEffect detonation = StatusLibrary.Get(StatusLibrary.Detonation);
+        Check(!detonation.Dispellable, "a bomb cannot simply be cleansed away");
+        stubborn.Status.Apply(detonation, null, 100.0);
+        Check(stubborn.Status.Dispel(beneficial: false, count: 5) == 0, "undispellable statuses survive a cleanse");
+
+        var many = new Dummy();
+        many.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), null, 100.0);
+        many.Status.Apply(StatusLibrary.Get(StatusLibrary.Sundered), null, 100.0);
+        Check(many.Status.Dispel(beneficial: false, count: 1) == 1, "dispel respects its count");
+        Check(many.Status.Active.Count == 1, "only one was taken");
+    }
+
+    // -- expiry ----------------------------------------------------------
+
+    private static void ExpiryEffects()
+    {
+        StatusEffect bomb = Custom("test_bomb", d =>
+        {
+            d.Duration = 5f;
+            d.Beneficial = false;
+            d.Dispellable = true;
+            d.OnExpire = new Godot.Collections.Array<AbilityEffect> { new DamageEffect { Amount = 40f } };
+        });
+
+        var carrier = new Dummy();
+        carrier.Status.Apply(bomb, null, 100.0);
+        carrier.Status.Tick(carrier, 104.0);
+        Near(carrier.HealthPool.Current, 1000f, "the bomb does nothing before its time");
+
+        carrier.Status.Tick(carrier, 105.1);
+        Near(carrier.HealthPool.Current, 960f, "the bomb detonates on expiry");
+        Check(carrier.Status.Active.Count == 0, "the bomb is gone afterwards");
+
+        // Removing it early is the entire point of removing it.
+        var cleansed = new Dummy();
+        cleansed.Status.Apply(bomb, null, 100.0);
+        cleansed.Status.Dispel(beneficial: false, count: 1);
+        cleansed.Status.Tick(cleansed, 200.0);
+        Near(cleansed.HealthPool.Current, 1000f, "a dispelled bomb does not detonate");
+
+        var died = new Dummy();
+        died.Status.Apply(bomb, null, 100.0);
+        died.Status.Clear();
+        died.Status.Tick(died, 200.0);
+        Near(died.HealthPool.Current, 1000f, "clearing on death does not detonate");
+
+        // A client must never run effects; it only stops drawing them.
+        var clientSide = new Dummy();
+        clientSide.Status.Apply(bomb, null, 100.0);
+        clientSide.Status.PruneForDisplay(200.0);
+        Near(clientSide.HealthPool.Current, 1000f, "expiring for display runs nothing");
+        Check(clientSide.Status.Active.Count == 0, "expiring for display still drops it");
     }
 
     // -- resources -------------------------------------------------------

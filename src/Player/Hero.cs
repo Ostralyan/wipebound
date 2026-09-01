@@ -67,6 +67,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     // --- ICombatant ---
     public string CombatName => $"hero {PeerId}";
+    public int CombatId => PeerId;
     public Team Team => Team.Players;
     public bool IsAlive => !_health.IsEmpty;
     public ResourcePool HealthPool => _health;
@@ -229,7 +230,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(Combatants.ScaleDamage(amount, source, this));
+        _health.Drain(Combatants.ResolveIncoming(amount, source, this));
 
         if (!IsAlive)
         {

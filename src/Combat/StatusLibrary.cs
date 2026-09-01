@@ -26,6 +26,7 @@ public static class StatusLibrary
     public const string Sundered = "sundered";
     public const string Burning = "burning";
     public const string Silenced = "silenced";
+    public const string Detonation = "detonation";
 
     static StatusLibrary()
     {
@@ -43,11 +44,14 @@ public static class StatusLibrary
             MoveSpeedMultiplier = 1.45f,
         });
 
+        // A shield rather than a mitigation multiplier: it spends itself and
+        // disappears, which is a decision about WHEN to use it rather than a
+        // passive discount on every hit for four seconds.
         Register(new StatusEffect
         {
-            Id = Warded, DisplayName = "Warded", Duration = 4f,
+            Id = Warded, DisplayName = "Warded", Duration = 6f,
             Beneficial = true, Tint = new Color("38bdf8"),
-            DamageTakenMultiplier = 0.55f,
+            AbsorbAmount = 45f,
         });
 
         // Stacks, so the raid is rewarded for keeping it up rather than reapplying
@@ -67,6 +71,9 @@ public static class StatusLibrary
             Id = Burning, DisplayName = "Burning", Duration = 6f,
             Beneficial = false, Tint = new Color("f97316"),
             TickInterval = 1f,
+            // Per caster, so each player's burn is their own and credits them
+            // rather than one player's reapplication stealing another's.
+            Scope = StatusScope.PerSource,
             OnTick = new Godot.Collections.Array<AbilityEffect> { new DamageEffect { Amount = 7f } },
         });
 
@@ -75,6 +82,24 @@ public static class StatusLibrary
             Id = Silenced, DisplayName = "Silenced", Duration = 2.5f,
             Beneficial = false, Tint = new Color("c084fc"),
             Silenced = true,
+        });
+
+        RegisterDetonation();
+    }
+
+    private static void RegisterDetonation()
+    {
+        // The mechanic that only exists because statuses can act on expiry: you are
+        // carrying a bomb, and the answer is to be somewhere else when it lands.
+        // Not dispellable -- removing it would delete the decision.
+        Register(new StatusEffect
+        {
+            Id = Detonation, DisplayName = "Detonation", Duration = 6f,
+            Beneficial = false, Tint = new Color("f43f5e"),
+            Dispellable = false,
+            ExpireRadius = 9f,
+            AreaAffects = TargetFilter.Enemies,
+            OnExpire = new Godot.Collections.Array<AbilityEffect> { new DamageEffect { Amount = 55f } },
         });
     }
 

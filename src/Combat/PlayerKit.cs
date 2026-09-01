@@ -68,6 +68,7 @@ public static class PlayerKit
             {
                 new ApplyStatusEffect { StatusId = StatusLibrary.Warded },
                 new ApplyStatusEffect { StatusId = StatusLibrary.Haste },
+                new DispelEffect { Count = 1, StripBeneficial = false },
             },
         },
 

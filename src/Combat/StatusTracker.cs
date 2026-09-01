@@ -5,14 +5,24 @@ using System.Text;
 
 namespace Wipebound.Combat;
 
-/// <summary>One live instance of a StatusEffect on one combatant.</summary>
+/// <summary>One live instance of a StatusEffect on one combatant, from one caster.</summary>
 public sealed class ActiveStatus
 {
     public StatusEffect Definition { get; init; }
+
+    /// Null on clients, which decode instances without resolving who cast them.
     public ICombatant Source { get; set; }
+
+    /// Survives the wire, so a client can tell two casters' instances apart.
+    public int SourceId { get; set; }
+
     public double ExpiresAt { get; set; }
     public int Stacks { get; set; } = 1;
     public double NextTickAt { get; set; }
+
+    /// Remaining shield, for statuses that absorb. Per instance, because a shield
+    /// is spent rather than scaled.
+    public float AbsorbRemaining { get; set; }
 
     public double RemainingAt(double now) => Mathf.Max(0.0, ExpiresAt - now);
 }
@@ -20,22 +30,28 @@ public sealed class ActiveStatus
 /// <summary>
 /// Every status currently on one combatant, plus the aggregate they add up to.
 ///
-/// The aggregates are recomputed on change rather than queried on demand, because
-/// they are read every physics frame by movement and every damage application,
-/// and change perhaps once a second.
+/// INSTANCES ARE PER CASTER. That is the general model: a status declared Shared
+/// collapses to a single instance, but a shared-only design can never express
+/// "this damage-over-time is mine and should credit me" or "this mark belongs to
+/// that player". The narrower behaviour is reachable from the wider one and not
+/// the other way round, so the wider one is the substrate.
+///
+/// Modifiers aggregate over DISTINCT status ids using the largest stack count, so
+/// five players applying the same vulnerability do not multiply it five times.
+/// Periodic effects run per instance, because those genuinely are each caster's.
+/// Shields sum, because two shields really are more shield.
+///
+/// Aggregates are recomputed on change rather than queried, because they are read
+/// every physics frame by movement and every damage application, and change
+/// perhaps once a second.
 ///
 /// REPLICATION. Statuses are server-authoritative, but the client needs its own:
 /// hero movement is client-authoritative, so a client that does not know it is
-/// slowed will keep running at full speed and the server's speed clamp will drag
-/// it back, which looks exactly like rubber-banding. So the whole set travels as
-/// a small encoded string on the server-authoritative synchronizer.
-///
-/// A string, rather than an array of dictionaries, for two reasons: Godot's
-/// change detection over it is unambiguous, and you can read the live state of
-/// every buff in the game straight out of a log line.
-///
-/// Expiry times are absolute server-clock times, which is what makes a decoded
-/// status on a client agree with the server about when it ends.
+/// slowed keeps running at full speed and the server's clamp drags it back, which
+/// reads as rubber banding. The set travels as a small encoded string -- Godot's
+/// change detection over it is unambiguous, and you can read every live status in
+/// the game straight out of a log line. Expiry times are absolute server-clock
+/// times, which is what makes a decoded status agree about when it ends.
 /// </summary>
 public sealed class StatusTracker
 {
@@ -50,15 +66,21 @@ public sealed class StatusTracker
     public float DamageTakenMultiplier { get; private set; } = 1f;
     public float DamageDealtMultiplier { get; private set; } = 1f;
     public float ManaRegenMultiplier { get; private set; } = 1f;
+    public float AbsorbRemaining { get; private set; }
     public bool Rooted { get; private set; }
     public bool Silenced { get; private set; }
 
-    public bool Has(string id) => Find(id) is not null;
+    public bool Has(string id) => Find(id, null) is not null;
 
-    private ActiveStatus Find(string id)
+    private ActiveStatus Find(string id, int? sourceId)
     {
         foreach (ActiveStatus status in _active)
-            if (status.Definition.Id == id) return status;
+        {
+            if (status.Definition.Id != id) continue;
+            if (sourceId is not null && status.SourceId != sourceId) continue;
+            return status;
+        }
+
         return null;
     }
 
@@ -68,7 +90,9 @@ public sealed class StatusTracker
     {
         if (definition is null) return;
 
-        ActiveStatus existing = Find(definition.Id);
+        int sourceId = source?.CombatId ?? 0;
+        bool perSource = definition.Scope == StatusScope.PerSource;
+        ActiveStatus existing = Find(definition.Id, perSource ? sourceId : null);
 
         if (existing is null)
         {
@@ -76,24 +100,28 @@ public sealed class StatusTracker
             {
                 Definition = definition,
                 Source = source,
+                SourceId = sourceId,
                 ExpiresAt = now + definition.Duration,
                 Stacks = 1,
                 NextTickAt = now + definition.TickInterval,
+                AbsorbRemaining = definition.AbsorbAmount,
             });
         }
         else
         {
-            switch (definition.Stacking)
-            {
-                case StackRule.Ignore:
-                    return;
-                case StackRule.Stack:
-                    existing.Stacks = Mathf.Min(existing.Stacks + 1, Mathf.Max(1, definition.MaxStacks));
-                    break;
-            }
+            if (definition.Stacking == StackRule.Ignore) return;
+
+            if (definition.Stacking == StackRule.Stack)
+                existing.Stacks = Mathf.Min(existing.Stacks + 1, Mathf.Max(1, definition.MaxStacks));
 
             existing.Source = source;
+            existing.SourceId = sourceId;
             existing.ExpiresAt = now + definition.Duration;
+
+            // Refreshing a shield restores it. A half-spent shield that stayed half
+            // spent would make reapplying it strictly worse than waiting.
+            if (definition.AbsorbAmount > 0f)
+                existing.AbsorbRemaining = definition.AbsorbAmount;
         }
 
         Rebuild();
@@ -101,10 +129,7 @@ public sealed class StatusTracker
 
     public void Remove(string id)
     {
-        ActiveStatus status = Find(id);
-        if (status is null) return;
-        _active.Remove(status);
-        Rebuild();
+        if (_active.RemoveAll(status => status.Definition.Id == id) > 0) Rebuild();
     }
 
     public void Clear()
@@ -114,57 +139,163 @@ public sealed class StatusTracker
         Rebuild();
     }
 
-    /// <summary>Server: expire what is done and run whatever ticks.</summary>
+    /// <summary>
+    /// Strip up to <paramref name="count"/> dispellable statuses. Expiry effects do
+    /// NOT run: removing something early is the entire point of removing it, and a
+    /// bomb that detonated when cleansed would make cleansing it pointless.
+    /// </summary>
+    public int Dispel(bool beneficial, int count)
+    {
+        int removed = 0;
+
+        for (int i = _active.Count - 1; i >= 0 && removed < count; i--)
+        {
+            StatusEffect definition = _active[i].Definition;
+            if (!definition.Dispellable || definition.Beneficial != beneficial) continue;
+
+            _active.RemoveAt(i);
+            removed++;
+        }
+
+        if (removed > 0) Rebuild();
+        return removed;
+    }
+
+    /// <summary>
+    /// Spend shields against incoming damage and return what gets through. Server
+    /// side: this mutates.
+    /// </summary>
+    public float AbsorbDamage(float amount)
+    {
+        if (amount <= 0f || AbsorbRemaining <= 0f) return Mathf.Max(0f, amount);
+
+        float remaining = amount;
+        bool changed = false;
+
+        for (int i = _active.Count - 1; i >= 0 && remaining > 0f; i--)
+        {
+            ActiveStatus status = _active[i];
+            if (status.AbsorbRemaining <= 0f) continue;
+
+            float soaked = Mathf.Min(status.AbsorbRemaining, remaining);
+            status.AbsorbRemaining -= soaked;
+            remaining -= soaked;
+            changed = true;
+
+            // A spent shield is gone, not a zero-strength status sitting on the bar.
+            if (status.AbsorbRemaining <= 0.0001f) _active.RemoveAt(i);
+        }
+
+        if (changed) Rebuild();
+        return remaining;
+    }
+
+    /// <summary>Server: run whatever ticks, then expire what is done.</summary>
     public void Tick(ICombatant owner, double now)
     {
-        bool changed = PruneExpired(now);
-
         foreach (ActiveStatus status in _active)
         {
             if (status.Definition.OnTick.Count == 0) continue;
             if (now < status.NextTickAt) continue;
 
             status.NextTickAt = now + Mathf.Max(0.05f, status.Definition.TickInterval);
-
-            var single = new List<ICombatant> { owner };
-            var context = new EffectContext
-            {
-                AbilityName = status.Definition.DisplayName,
-                Caster = status.Source ?? owner,
-                Targets = single,
-                Candidates = single,
-            };
-
-            for (int stack = 0; stack < status.Stacks; stack++)
-                foreach (AbilityEffect effect in status.Definition.OnTick)
-                    effect?.Resolve(context);
+            Run(owner, status, now, status.Definition.OnTick, status.Definition.TickRadius);
         }
 
-        if (changed) Rebuild();
+        List<ActiveStatus> expired = TakeExpired(now);
+        if (expired is null) return;
+
+        foreach (ActiveStatus status in expired)
+            if (status.Definition.OnExpire.Count > 0)
+                Run(owner, status, now, status.Definition.OnExpire, status.Definition.ExpireRadius);
+
+        Rebuild();
     }
 
-    /// <summary>Client: drop what has visibly ended, so the HUD stays honest between updates.</summary>
+    /// <summary>Client: drop what has visibly ended. Never runs effects.</summary>
     public void PruneForDisplay(double now)
     {
-        if (PruneExpired(now)) Rebuild();
+        if (TakeExpired(now) is not null) Rebuild();
     }
 
-    private bool PruneExpired(double now)
+    private List<ActiveStatus> TakeExpired(double now)
     {
-        int removed = _active.RemoveAll(status => now >= status.ExpiresAt);
-        return removed > 0;
+        List<ActiveStatus> expired = null;
+
+        for (int i = _active.Count - 1; i >= 0; i--)
+        {
+            if (now < _active[i].ExpiresAt) continue;
+            (expired ??= new List<ActiveStatus>()).Add(_active[i]);
+            _active.RemoveAt(i);
+        }
+
+        return expired;
     }
 
-    // -- wire form --------------------------------------------------------
+    /// <summary>
+    /// Resolve one status's effects.
+    ///
+    /// The area is always a real circle centred on the bearer, never a default
+    /// struct. A zero-radius footprint at the world origin was a live trap: any
+    /// area-dependent effect used as a tick -- a knockback, say -- would have flung
+    /// the whole raid toward (0, 0).
+    /// </summary>
+    private static void Run(ICombatant owner, ActiveStatus status, double now,
+                            Godot.Collections.Array<AbilityEffect> effects, float radius)
+    {
+        ICombatant caster = status.Source ?? owner;
+        var area = new TelegraphArea(TelegraphShape.Circle, owner.CombatPosition, 0f, Mathf.Max(radius, 0f));
+
+        List<ICombatant> targets;
+        List<ICombatant> candidates;
+
+        if (radius <= 0f || owner.Node is null)
+        {
+            targets = new List<ICombatant> { owner };
+            candidates = targets;
+        }
+        else
+        {
+            candidates = Combatants.Living(owner.Node, caster, status.Definition.AreaAffects);
+            targets = new List<ICombatant>();
+
+            foreach (ICombatant candidate in candidates)
+                if (area.Contains(candidate.CombatPosition))
+                    targets.Add(candidate);
+        }
+
+        var context = new EffectContext
+        {
+            AbilityName = status.Definition.DisplayName,
+            Caster = caster,
+            Area = area,
+            Targets = targets,
+            Candidates = candidates,
+            Now = now,
+        };
+
+        for (int stack = 0; stack < status.Stacks; stack++)
+            foreach (AbilityEffect effect in effects)
+                effect?.Resolve(context);
+    }
+
+    // -- aggregation and wire form ---------------------------------------
 
     private void Rebuild()
     {
-        float move = 1f, taken = 1f, dealt = 1f, regen = 1f;
-        bool rooted = false, silenced = false;
-
-        var builder = new StringBuilder();
-
+        // Modifiers aggregate over distinct ids using the biggest stack, so several
+        // casters applying the same debuff do not multiply it once each.
+        var strongest = new Dictionary<string, ActiveStatus>();
         foreach (ActiveStatus status in _active)
+        {
+            string id = status.Definition.Id;
+            if (!strongest.TryGetValue(id, out ActiveStatus best) || status.Stacks > best.Stacks)
+                strongest[id] = status;
+        }
+
+        float move = 1f, taken = 1f, dealt = 1f, regen = 1f;
+
+        foreach (ActiveStatus status in strongest.Values)
         {
             StatusEffect definition = status.Definition;
 
@@ -173,20 +304,33 @@ public sealed class StatusTracker
             taken *= Mathf.Pow(definition.DamageTakenMultiplier, status.Stacks);
             dealt *= Mathf.Pow(definition.DamageDealtMultiplier, status.Stacks);
             regen *= Mathf.Pow(definition.ManaRegenMultiplier, status.Stacks);
+        }
 
-            rooted |= definition.Rooted;
-            silenced |= definition.Silenced;
+        bool rooted = false, silenced = false;
+        float absorb = 0f;
+        var builder = new StringBuilder();
+
+        foreach (ActiveStatus status in _active)
+        {
+            rooted |= status.Definition.Rooted;
+            silenced |= status.Definition.Silenced;
+
+            // Shields sum across instances: two shields really are more shield.
+            absorb += status.AbsorbRemaining;
 
             if (builder.Length > 0) builder.Append('|');
-            builder.Append(definition.Id).Append(':')
+            builder.Append(status.Definition.Id).Append(':')
                    .Append(status.ExpiresAt.ToString("0.##", CultureInfo.InvariantCulture)).Append(':')
-                   .Append(status.Stacks);
+                   .Append(status.Stacks).Append(':')
+                   .Append(status.SourceId).Append(':')
+                   .Append(status.AbsorbRemaining.ToString("0.#", CultureInfo.InvariantCulture));
         }
 
         MoveSpeedMultiplier = move;
         DamageTakenMultiplier = taken;
         DamageDealtMultiplier = dealt;
         ManaRegenMultiplier = regen;
+        AbsorbRemaining = absorb;
         Rooted = rooted;
         Silenced = silenced;
         Encoded = builder.ToString();
@@ -202,16 +346,29 @@ public sealed class StatusTracker
             foreach (string entry in payload.Split('|'))
             {
                 string[] parts = entry.Split(':');
-                if (parts.Length != 3) continue;
+
+                // Trailing fields are optional so the format can grow without a
+                // version handshake: an older sender simply omits them.
+                if (parts.Length < 3) continue;
 
                 StatusEffect definition = StatusLibrary.Get(parts[0]);
                 if (definition is null) continue;
+                if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out double expires)) continue;
+                if (!int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int stacks)) continue;
+
+                int sourceId = 0;
+                if (parts.Length > 3) int.TryParse(parts[3], NumberStyles.Integer, CultureInfo.InvariantCulture, out sourceId);
+
+                float absorb = 0f;
+                if (parts.Length > 4) float.TryParse(parts[4], NumberStyles.Float, CultureInfo.InvariantCulture, out absorb);
 
                 _active.Add(new ActiveStatus
                 {
                     Definition = definition,
-                    ExpiresAt = double.Parse(parts[1], CultureInfo.InvariantCulture),
-                    Stacks = int.Parse(parts[2], CultureInfo.InvariantCulture),
+                    ExpiresAt = expires,
+                    Stacks = stacks,
+                    SourceId = sourceId,
+                    AbsorbRemaining = absorb,
                 });
             }
         }

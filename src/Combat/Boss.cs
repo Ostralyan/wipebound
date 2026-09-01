@@ -39,6 +39,10 @@ public partial class Boss : Node3D, ICombatant
 
     // --- ICombatant ---
     public string CombatName => DisplayName;
+
+    /// NPC sources share one identity. Fine while nothing NPC-applied is PerSource;
+    /// adds will need real ids agreed across peers.
+    public int CombatId => -1;
     public Team Team => Team.Enemies;
     public Vector3 CombatPosition => GlobalPosition;
     public bool IsAlive => !_health.IsEmpty;
@@ -230,7 +234,7 @@ public partial class Boss : Node3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(Combatants.ScaleDamage(amount, source, this));
+        _health.Drain(Combatants.ResolveIncoming(amount, source, this));
 
         if (IsAlive) return;
 

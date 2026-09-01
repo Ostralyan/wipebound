@@ -33,6 +33,14 @@ public enum TargetFilter
 public interface ICombatant
 {
     string CombatName { get; }
+
+    /// <summary>
+    /// Stable identity across peers, used to tell one caster's statuses from
+    /// another's over the wire. Heroes use their peer id. NPCs currently share one,
+    /// which is fine while nothing NPC-applied is PerSource.
+    /// </summary>
+    int CombatId { get; }
+
     Team Team { get; }
 
     /// The position the SERVER believes this combatant occupies.
@@ -104,6 +112,18 @@ public static class Combatants
         float outgoing = source?.Status?.DamageDealtMultiplier ?? 1f;
         float incoming = target?.Status?.DamageTakenMultiplier ?? 1f;
         return amount * outgoing * incoming;
+    }
+
+    /// <summary>
+    /// The whole incoming-damage pipeline, in the order it has to happen: scale by
+    /// both sides' modifiers, then spend shields against what is left. Absorption
+    /// after mitigation, because a shield soaks the damage you were actually going
+    /// to take. Both ApplyDamage implementations call this, so neither can drift.
+    /// </summary>
+    public static float ResolveIncoming(float amount, ICombatant source, ICombatant target)
+    {
+        float scaled = ScaleDamage(amount, source, target);
+        return target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled);
     }
 
     public static ICombatant ByDistance(IReadOnlyList<ICombatant> from, Vector3 origin, bool nearest)
