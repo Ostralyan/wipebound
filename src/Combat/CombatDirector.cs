@@ -70,6 +70,16 @@ public partial class CombatDirector : Node
     private long _nextId = 1;
 
     private static bool IsServer => NetworkManager.Instance.IsServer;
+
+    /// <summary>
+    /// Whether there is anybody to broadcast to. Session boundaries fire while a
+    /// client is still connecting and again while it is tearing down, and calling
+    /// Rpc in either window errors out -- which is exactly what reset-on-join did.
+    /// </summary>
+    private bool CanBroadcast
+        => IsServer
+           && Multiplayer.MultiplayerPeer is not null
+           && Multiplayer.MultiplayerPeer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected;
     private static double Now => NetClock.Instance.ServerTime;
 
     public override void _Ready()
@@ -113,6 +123,8 @@ public partial class CombatDirector : Node
         // Take the warnings off the ground too. A telegraph that keeps filling for a
         // cast that will never resolve is worse than no telegraph, because the whole
         // premise is that the circle tells the truth.
+        if (!CanBroadcast) return;
+
         foreach (CastInstance cast in stopped) Rpc(MethodName.EndTelegraphView, cast.Id);
         if (caster is not null) Rpc(MethodName.CastEnded, (int)caster.Team);
     }
@@ -129,7 +141,10 @@ public partial class CombatDirector : Node
     {
         _casts.CancelAll();
         _hazards.Clear();
-        Rpc(MethodName.ClearTelegraphViews);
+
+        // A peer with nobody to talk to still has its own drawings to clear.
+        if (CanBroadcast) Rpc(MethodName.ClearTelegraphViews);
+        else TelegraphView.EndAll(this);
     }
 
         // ---------------------------------------------------------------------
