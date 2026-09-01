@@ -39,51 +39,79 @@ pub struct RunSubmission {
     pub players: Vec<PlayerLine>,
 }
 
-/// <summary>
-/// A fingerprint of the WHOLE submission, so a duplicate id can be told from a
+/// A fingerprint of the whole submission, so a duplicate id can be told from a
 /// retry.
 ///
-/// Comparing a handful of columns was not enough: a submission reusing an id with
-/// a different boss, engine, submitting server and player metrics matched on all
-/// five fields that were checked and was accepted as a retry. Everything the
-/// submitter said now goes into one value, so "same run" means the same run.
+/// LENGTH-PREFIXED, not separator-delimited. An earlier version joined fields with
+/// byte 0x1f on the claim that it could not appear in them, which was simply
+/// untrue: JSON carries that byte perfectly well, so engine="x<0x1f>y" with
+/// content_hash="current" hashed identically to engine="y" with
+/// content_hash="current<0x1f>x". Prefixing each field with its length makes the
+/// encoding unambiguous whatever the bytes are.
 ///
-/// Players are sorted, because the roster is a set and two orderings of it are the
-/// same submission. Fields are separated by a byte that cannot appear in them, so
-/// no two different submissions can serialise to the same bytes by accident.
-/// </summary>
-pub fn digest(submission: &RunSubmission) -> String {
-    const SEPARATOR: [u8; 1] = [0x1f];
+/// Takes the submitting server, because a submission is a body AND who sent it.
+/// Leaving it out meant the same body from a second server was accepted as a retry
+/// of the first, which contradicted the point of having a digest at all.
+///
+/// Players are sorted, because a roster is a set and two orderings of it are the
+/// same run.
+pub fn digest(submission: &RunSubmission, game_server: &str) -> String {
+    fn field(hasher: &mut Sha256, value: &[u8]) {
+        hasher.update((value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+
+    fn text(hasher: &mut Sha256, value: &str) {
+        field(hasher, value.as_bytes());
+    }
+
+    fn number(hasher: &mut Sha256, value: i64) {
+        field(hasher, &value.to_le_bytes());
+    }
 
     let mut hasher = Sha256::new();
 
-    let field = |value: &str, hasher: &mut Sha256| {
-        hasher.update(value.as_bytes());
-        hasher.update(SEPARATOR);
-    };
-
-    field(&submission.schema.to_string(), &mut hasher);
-    field(&submission.run_id, &mut hasher);
-    field(&submission.boss, &mut hasher);
-    field(&submission.outcome, &mut hasher);
-    field(&submission.duration_ms.to_string(), &mut hasher);
-    field(&submission.content_hash, &mut hasher);
-    field(&submission.engine, &mut hasher);
-    field(&submission.authority, &mut hasher);
-    field(&submission.worst_overreach_cm.to_string(), &mut hasher);
+    number(&mut hasher, i64::from(submission.schema));
+    text(&mut hasher, &submission.run_id);
+    text(&mut hasher, &submission.boss);
+    text(&mut hasher, &submission.outcome);
+    number(&mut hasher, submission.duration_ms);
+    text(&mut hasher, &submission.content_hash);
+    text(&mut hasher, &submission.engine);
+    text(&mut hasher, &submission.authority);
+    number(&mut hasher, submission.worst_overreach_cm);
+    text(&mut hasher, game_server);
 
     let mut roster = submission.players.clone();
     roster.sort_by_key(|player| player.peer);
+    number(&mut hasher, roster.len() as i64);
 
     for player in &roster {
-        field(&player.peer.to_string(), &mut hasher);
-        field(&player.damage_done.to_string(), &mut hasher);
-        field(&player.healing_done.to_string(), &mut hasher);
-        field(&player.damage_taken.to_string(), &mut hasher);
-        field(&player.overreach_cm.to_string(), &mut hasher);
+        number(&mut hasher, player.peer);
+        number(&mut hasher, player.damage_done);
+        number(&mut hasher, player.healing_done);
+        number(&mut hasher, player.damage_taken);
+        number(&mut hasher, player.overreach_cm);
     }
 
     hex::encode(hasher.finalize())
+}
+
+/// The five fields the digest replaced. Kept solely to recognise a retry of a run
+/// recorded before digests existed, whose stored digest is empty.
+pub fn matches_legacy_fields(
+    submission: &RunSubmission,
+    outcome: &str,
+    duration_ms: i64,
+    content_hash: &str,
+    authority: &str,
+    worst_overreach_cm: i64,
+) -> bool {
+    submission.outcome == outcome
+        && submission.duration_ms == duration_ms
+        && submission.content_hash == content_hash
+        && submission.authority == authority
+        && submission.worst_overreach_cm == worst_overreach_cm
 }
 
 /// Malformed or self-contradictory. Refused outright, nothing stored.
@@ -258,29 +286,55 @@ mod tests {
 
     #[test]
     fn the_digest_covers_everything_the_submitter_said() {
+        const SERVER: &str = "server-a";
+
+        // A submission is a body AND who sent it. Without this the same body from
+        // a second server was accepted as a retry of the first.
+        assert_ne!(
+            digest(&honest(), "server-a"),
+            digest(&honest(), "server-b"),
+            "the same body from another server is not the same submission"
+        );
+
+        // The separator-delimited version hashed these identically, because JSON
+        // carries the separator byte perfectly well.
+        let mut shifted_left = honest();
+        shifted_left.content_hash = "current".into();
+        shifted_left.engine = "x\u{1f}y".into();
+
+        let mut shifted_right = honest();
+        shifted_right.content_hash = "current\u{1f}x".into();
+        shifted_right.engine = "y".into();
+
+        assert_ne!(
+            digest(&shifted_left, SERVER),
+            digest(&shifted_right, SERVER),
+            "field boundaries survive a control character inside a field"
+        );
+
         let original = honest();
         assert_eq!(
-            digest(&original),
-            digest(&honest()),
+            digest(&original, SERVER),
+            digest(&honest(), SERVER),
             "the same run digests the same"
         );
 
         // Every one of these was invisible to the old five-field comparison.
         let mut other_boss = honest();
         other_boss.boss = "Something Else".into();
-        assert_ne!(digest(&original), digest(&other_boss));
+        assert_ne!(digest(&original, SERVER), digest(&other_boss, SERVER));
 
         let mut other_engine = honest();
         other_engine.engine = "4.9.9".into();
-        assert_ne!(digest(&original), digest(&other_engine));
+        assert_ne!(digest(&original, SERVER), digest(&other_engine, SERVER));
 
         let mut other_damage = honest();
         other_damage.players[0].damage_done += 1;
-        assert_ne!(digest(&original), digest(&other_damage));
+        assert_ne!(digest(&original, SERVER), digest(&other_damage, SERVER));
 
         let mut other_peer = honest();
         other_peer.players[0].peer += 1;
-        assert_ne!(digest(&original), digest(&other_peer));
+        assert_ne!(digest(&original, SERVER), digest(&other_peer, SERVER));
 
         // The roster is a set: the same players in another order are the same run.
         let mut two = honest();
@@ -295,8 +349,8 @@ mod tests {
         let mut reversed = two.clone();
         reversed.players.reverse();
         assert_eq!(
-            digest(&two),
-            digest(&reversed),
+            digest(&two, SERVER),
+            digest(&reversed, SERVER),
             "roster order is not identity"
         );
     }

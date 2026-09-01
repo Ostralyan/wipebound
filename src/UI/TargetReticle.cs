@@ -71,8 +71,13 @@ public partial class TargetReticle : Node3D
             return;
         }
 
+        // The VISIBLE position, for the same reason the pick uses it: CombatPosition
+        // is the server's validated copy and never advances on a client, so drawing
+        // there put the ring at the hero's spawn point while they ran around. The
+        // selection was fixed and this was left behind, which is worse than either
+        // being wrong -- it targeted correctly and pointed somewhere else.
         Visible = true;
-        GlobalPosition = hovered.CombatPosition + new Vector3(0f, 0.08f, 0f);
+        GlobalPosition = hovered.Node.GlobalPosition + new Vector3(0f, 0.08f, 0f);
         _material.AlbedoColor = hovered.Team == _hero.Team ? AllyTint : EnemyTint;
     }
 }

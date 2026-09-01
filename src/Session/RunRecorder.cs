@@ -44,7 +44,7 @@ public partial class RunRecorder : Node
     private double _startedAt;
     private bool _inProgress;
 
-    public override void _Ready() { Instance = this; GD.Print($"HASH {ContentHash.Current}"); }
+    public override void _Ready() => Instance = this;
 
     public void BeginAttempt(string bossId)
     {

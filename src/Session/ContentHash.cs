@@ -61,8 +61,34 @@ public static class ContentHash
         foreach (StatusEffect status in StatusLibrary.All) Append(builder, status, 0, path);
 
         AppendTunedScenes(builder);
+        AppendConstants(builder);
 
         return Fnv1a(builder.ToString());
+    }
+
+    /// <summary>
+    /// Gameplay constants that reflection cannot see.
+    ///
+    /// A const is not a property, so the walk over exported values misses it
+    /// entirely -- and several of these decide whether a run is even eligible for
+    /// a ladder. There is no way to enumerate them, so this list is maintained by
+    /// hand and that is a real cost: a constant added here and forgotten here is
+    /// invisible again. Kept short for exactly that reason, and anything that can
+    /// reasonably be an [Export] should be one instead.
+    /// </summary>
+    private static void AppendConstants(StringBuilder builder)
+    {
+        builder.Append("constants(")
+               .Append("arena=").Append(Player.Hero.ArenaRadius).Append(';')
+               .Append("speedMargin=").Append(Player.Hero.SpeedChangeMargin).Append(';')
+               .Append("ack=").Append(Player.Hero.AcknowledgeDistance).Append(';')
+               .Append("tolerance=").Append(MovementValidator.SpeedTolerance).Append(';')
+               .Append("burst=").Append(MovementValidator.BurstSeconds).Append(';')
+               .Append("garbage=").Append(MovementValidator.GarbageClaimPenalty).Append(';')
+               .Append("attentionHalfLife=").Append(TargetSelection.AttentionHalfLife).Append(';')
+               .Append("attentionMemory=").Append(TargetSelection.AttentionMemory).Append(';')
+               .Append("maxCreditedRtt=").Append(Net.NetClock.MaxCreditedRtt).Append(';')
+               .Append(')');
     }
 
     /// <summary>

@@ -306,9 +306,18 @@ ground for a cast that was interrupted is worse than no telegraph at all.
 ## Tests
 
 ```
-godot --headless -- --selftest          # game logic, 236 assertions
-cd backend && cargo test                 # ladder rules
-docker compose up -d && DATABASE_URL=... cargo test   # and its HTTP surface
+# Game logic. No dependencies.
+godot --headless -- --selftest   # 259 passed
+
+# Ladder rules and the HTTP surface. The database is required, not optional:
+# without DATABASE_URL these FAIL rather than skipping, because a suite that
+# silently passes with no database reports green and proves nothing.
+cd backend
+docker compose up -d
+DATABASE_URL=postgres://wipebound:wipebound@localhost:55432/wipebound cargo test
+
+# To skip them on purpose, and visibly:
+WIPEBOUND_SKIP_DB_TESTS=1 cargo test
 ```
 
 Exits non-zero on failure, so CI can gate on it. Covers the things that are silent

@@ -20,10 +20,12 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use diesel::prelude::*;
+use diesel_async::RunQueryDsl;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
-use wipebound_backend::{config::Config, db, router, AppState};
+use wipebound_backend::{config::Config, db, router, schema::runs, AppState};
 
 const TOKEN: &str = "integration-token";
 const HASH: &str = "hash-current";
@@ -77,7 +79,8 @@ fn submit(body: Value, token: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
         .uri("/v1/internal/runs")
-        .header("content-type", "application/json");
+        .header("content-type", "application/json")
+        .header("x-server-id", "review-server-a");
 
     if let Some(token) = token {
         builder = builder.header("authorization", format!("Bearer {token}"));
@@ -293,6 +296,81 @@ async fn a_reused_id_is_a_conflict_even_when_the_compared_columns_match() {
         "the stored run must be untouched"
     );
     assert_eq!(body["players"][0]["damage_done"], 100);
+}
+
+/// The same body from a different server is a different submission. It used to be
+/// accepted as a retry, because the server id was read after the digest was taken.
+#[tokio::test]
+async fn the_same_body_from_another_server_is_a_conflict() {
+    let app = require_db!();
+    let id = unique("twoservers");
+    let boss = format!("boss-{id}");
+    let payload = run(&id, &boss, "kill", 30_000, HASH, "dedicated");
+
+    let from_a = submit(payload.clone(), Some(TOKEN));
+    let (status, _) = call(app.clone(), from_a).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/v1/internal/runs")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {TOKEN}"));
+
+    builder = builder.header("x-server-id", "review-server-b");
+    let from_b = builder.body(Body::from(payload.to_string())).unwrap();
+
+    let (status, _) = call(app, from_b).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// Runs recorded before digests existed carry an empty one. The spool exists to
+/// retry across restarts and deployments, so without a legacy path the first
+/// deploy after that migration would have turned every in-flight retry into a 409
+/// and lost the run.
+#[tokio::test]
+async fn a_retry_of_a_pre_digest_run_is_recognised_and_backfilled() {
+    let app = require_db!();
+    let id = unique("legacy");
+    let boss = format!("boss-{id}");
+    let payload = run(&id, &boss, "kill", 33_000, HASH, "dedicated");
+
+    let (status, _) = call(app.clone(), submit(payload.clone(), Some(TOKEN))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Make it look like a row written before the column existed.
+    {
+        let mut conn = app.pool.get().await.unwrap();
+        diesel::update(runs::table.find(&id))
+            .set(runs::submission_digest.eq(""))
+            .execute(&mut conn)
+            .await
+            .unwrap();
+    }
+
+    let (status, body) = call(app.clone(), submit(payload, Some(TOKEN))).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a retry of a pre-digest run is still a retry"
+    );
+    assert_eq!(body["duplicate"], true);
+
+    // And it is only legacy once.
+    {
+        let mut conn = app.pool.get().await.unwrap();
+        let digest: String = runs::table
+            .find(&id)
+            .select(runs::submission_digest)
+            .first(&mut conn)
+            .await
+            .unwrap();
+
+        assert!(
+            !digest.is_empty(),
+            "the digest is backfilled on first recognition"
+        );
+    }
 }
 
 #[tokio::test]
