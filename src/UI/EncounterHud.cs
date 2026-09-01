@@ -32,6 +32,7 @@ public partial class EncounterHud : Control
     private Label _bossName;
     private Label _castLabel;
     private ProgressBar _bossHealth;
+    private HBoxContainer _bossStatusRow;
     private ProgressBar _castBar;
 
     // Player frame
@@ -47,6 +48,7 @@ public partial class EncounterHud : Control
     private Hero _hero;
     private readonly List<SlotView> _slots = new();
     private readonly List<Label> _buffLabels = new();
+    private readonly List<Label> _bossStatusLabels = new();
 
     private double _castStart;
     private double _castEnd;
@@ -56,6 +58,7 @@ public partial class EncounterHud : Control
     {
         _bossName = GetNode<Label>("Encounter/BossName");
         _bossHealth = GetNode<ProgressBar>("Encounter/BossHealth");
+        _bossStatusRow = GetNode<HBoxContainer>("Encounter/BossStatuses");
         _castLabel = GetNode<Label>("Encounter/CastLabel");
         _castBar = GetNode<ProgressBar>("Encounter/CastBar");
 
@@ -136,6 +139,10 @@ public partial class EncounterHud : Control
 
         _bossHealth.MaxValue = _boss.HealthMax;
         _bossHealth.Value = _boss.Health;
+
+        // The boss's own statuses, because its Sundered stacks are the entire
+        // reason to coordinate a burst window and nobody could see them.
+        RenderStatuses(_bossStatusRow, _bossStatusLabels, _boss.Status, NetClock.Instance.ServerTime);
     }
 
     private void UpdateCast(double now)
@@ -232,32 +239,39 @@ public partial class EncounterHud : Control
     }
 
     private void UpdateBuffs(double now)
+        => RenderStatuses(_buffRow, _buffLabels, _hero.Status, now);
+
+    /// <summary>
+    /// Draw one status row. Labels are pooled rather than rebuilt, because this runs
+    /// every frame and a status set changes perhaps once a second.
+    /// </summary>
+    private static void RenderStatuses(HBoxContainer row, List<Label> pool, StatusTracker tracker, double now)
     {
-        IReadOnlyList<ActiveStatus> active = _hero.Status.Active;
+        IReadOnlyList<ActiveStatus> active = tracker.Active;
 
         for (int i = 0; i < active.Count; i++)
         {
-            Label label = i < _buffLabels.Count ? _buffLabels[i] : NewBuffLabel();
+            Label label = i < pool.Count ? pool[i] : NewStatusLabel(row, pool);
             ActiveStatus status = active[i];
 
-            label.Text = status.Stacks > 1
-                ? $"{status.Definition.DisplayName} x{status.Stacks}  {status.RemainingAt(now):0.0}s"
-                : $"{status.Definition.DisplayName}  {status.RemainingAt(now):0.0}s";
+            string name = status.Definition.DisplayName;
+            if (status.Stacks > 1) name += $" x{status.Stacks}";
+            if (status.AbsorbRemaining > 0f) name += $" [{Mathf.RoundToInt(status.AbsorbRemaining)}]";
 
+            label.Text = $"{name}  {status.RemainingAt(now):0.0}s";
             label.Modulate = status.Definition.Tint;
             label.Visible = true;
         }
 
-        // Pooled rather than rebuilt, because this runs every frame.
-        for (int i = active.Count; i < _buffLabels.Count; i++)
-            _buffLabels[i].Visible = false;
+        for (int i = active.Count; i < pool.Count; i++)
+            pool[i].Visible = false;
     }
 
-    private Label NewBuffLabel()
+    private static Label NewStatusLabel(HBoxContainer row, List<Label> pool)
     {
         var label = new Label { MouseFilter = MouseFilterEnum.Ignore };
-        _buffRow.AddChild(label);
-        _buffLabels.Add(label);
+        row.AddChild(label);
+        pool.Add(label);
         return label;
     }
 

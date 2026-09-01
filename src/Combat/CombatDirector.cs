@@ -7,6 +7,9 @@ namespace Wipebound.Combat;
 /// <summary>A patch of ground that keeps hurting. Server-side; clients draw it.</summary>
 public sealed class HazardInstance
 {
+    /// Identifies the client-side visual, so it can be removed early.
+    public long Id { get; init; }
+
     public Hazard Definition { get; init; }
     public ICombatant Owner { get; init; }
     public TelegraphArea Area { get; init; }
@@ -17,6 +20,10 @@ public sealed class HazardInstance
 /// <summary>One cast in flight. Server-side; clients only ever see the telegraph.</summary>
 public sealed class CastInstance
 {
+    /// Identifies the client-side telegraph, so an interrupted cast can take its
+    /// warning off the ground instead of letting it fill and flash as if it landed.
+    public long Id { get; init; }
+
     public Ability Ability { get; init; }
     public ICombatant Caster { get; init; }
     public TelegraphArea Area { get; init; }
@@ -58,8 +65,9 @@ public partial class CombatDirector : Node
     /// Fires when a cast ends without resolving.
     [Signal] public delegate void CastInterruptedEventHandler(int casterTeam);
 
-    private readonly List<CastInstance> _pending = new();
-    private readonly List<HazardInstance> _hazards = new();
+    private readonly CastQueue _casts = new();
+    private readonly HazardField _hazards = new();
+    private long _nextId = 1;
 
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
@@ -80,7 +88,7 @@ public partial class CombatDirector : Node
     /// </summary>
     private void OnSessionBoundary()
     {
-        CancelAll();
+        ResetEncounter();
 
         foreach (Node node in GetTree().GetNodesInGroup(Boss.GroupName))
             if (node is Boss boss) boss.ResetForNewSession();
@@ -90,12 +98,7 @@ public partial class CombatDirector : Node
                 combatant.OnEncounterReset();
     }
 
-    public bool IsCasting(ICombatant caster)
-    {
-        foreach (CastInstance cast in _pending)
-            if (ReferenceEquals(cast.Caster, caster)) return true;
-        return false;
-    }
+    public bool IsCasting(ICombatant caster) => _casts.IsCasting(caster);
 
     /// <summary>
     /// Drop whatever this caster had in flight. Interrupts and wipes both land here;
@@ -104,28 +107,32 @@ public partial class CombatDirector : Node
     /// </summary>
     public void CancelFor(ICombatant caster)
     {
-        bool any = false;
+        List<CastInstance> stopped = _casts.CancelFor(caster);
+        if (stopped.Count == 0) return;
 
-        // MARK, never remove. An interrupt reaches this from inside the resolution
-        // of another cast, so removing here would mutate the list _PhysicsProcess is
-        // walking -- which is exactly the exception the first interrupt produced.
-        foreach (CastInstance cast in _pending)
-        {
-            if (cast.Cancelled || !ReferenceEquals(cast.Caster, caster)) continue;
-            cast.Cancelled = true;
-            any = true;
-        }
-
-        if (any && caster is not null) Rpc(MethodName.CastEnded, (int)caster.Team);
+        // Take the warnings off the ground too. A telegraph that keeps filling for a
+        // cast that will never resolve is worse than no telegraph, because the whole
+        // premise is that the circle tells the truth.
+        foreach (CastInstance cast in stopped) Rpc(MethodName.EndTelegraphView, cast.Id);
+        if (caster is not null) Rpc(MethodName.CastEnded, (int)caster.Team);
     }
 
-    public void CancelAll()
+    /// <summary>
+    /// Wipe every trace of the current fight: casts in flight, ground still burning,
+    /// and the visuals for both.
+    ///
+    /// Hazards outliving a reset was a live bug -- Cinders lasts fourteen seconds
+    /// and a reset takes eight, so fire from the previous attempt was still burning
+    /// when the raid came back to life in it.
+    /// </summary>
+    public void ResetEncounter()
     {
-        foreach (CastInstance cast in _pending) cast.Cancelled = true;
+        _casts.CancelAll();
         _hazards.Clear();
+        Rpc(MethodName.ClearTelegraphViews);
     }
 
-    // ---------------------------------------------------------------------
+        // ---------------------------------------------------------------------
     // Hazards
     // ---------------------------------------------------------------------
 
@@ -135,8 +142,11 @@ public partial class CombatDirector : Node
 
         GD.Print($"[hazard] {definition.DisplayName} at {Flat(area.Center)} r={area.Radius} for {definition.Duration}s");
 
+        long id = _nextId++;
+
         _hazards.Add(new HazardInstance
         {
+            Id = id,
             Definition = definition,
             Owner = owner,
             Area = area,
@@ -146,24 +156,13 @@ public partial class CombatDirector : Node
 
         // Drawn as a telegraph that is already full and simply persists: a hazard is
         // not counting down to anything, it is dangerous the whole time.
-        Rpc(MethodName.ShowHazard, area.ToDictionary(), now, now + definition.Duration, definition.Tint);
+        Rpc(MethodName.ShowHazard, id, area.ToDictionary(), now, now + definition.Duration, definition.Tint);
     }
 
     private void TickHazards(double now)
     {
-        for (int i = _hazards.Count - 1; i >= 0; i--)
+        foreach (HazardInstance hazard in _hazards.Advance(now))
         {
-            HazardInstance hazard = _hazards[i];
-
-            if (now >= hazard.ExpiresAt)
-            {
-                _hazards.RemoveAt(i);
-                continue;
-            }
-
-            if (now < hazard.NextTickAt) continue;
-            hazard.NextTickAt = now + Mathf.Max(0.05f, hazard.Definition.TickInterval);
-
             List<ICombatant> candidates = Combatants.Living(this, hazard.Owner, hazard.Definition.Affects);
             var standing = new List<ICombatant>();
 
@@ -173,7 +172,7 @@ public partial class CombatDirector : Node
 
             if (standing.Count == 0) continue;
 
-            // Same spirit as the resolve log: say who the server thinks is standing
+            // Same spirit as the resolve log: say who the server believes is standing
             // in it, so "I was not in that" can be checked rather than argued.
             GD.Print($"[hazard] {hazard.Definition.DisplayName} caught {standing.Count} " +
                      $"({string.Join(", ", standing.ConvertAll(c => c.CombatName))})");
@@ -194,8 +193,14 @@ public partial class CombatDirector : Node
     }
 
     [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
-    private void ShowHazard(Godot.Collections.Dictionary areaData, double from, double until, Color color)
-        => TelegraphView.Spawn(this, TelegraphArea.FromDictionary(areaData), from, from, color, until);
+    private void ShowHazard(long id, Godot.Collections.Dictionary areaData, double from, double until, Color color)
+        => TelegraphView.Spawn(this, id, TelegraphArea.FromDictionary(areaData), from, from, color, until);
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void EndTelegraphView(long id) => TelegraphView.EndOne(this, id);
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void ClearTelegraphViews() => TelegraphView.EndAll(this);
 
     /// Lets a HUD stop showing a cast bar for something that was interrupted.
     [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
@@ -215,6 +220,7 @@ public partial class CombatDirector : Node
 
         var cast = new CastInstance
         {
+            Id = _nextId++,
             Ability = ability,
             Caster = caster,
             Area = area,
@@ -223,12 +229,12 @@ public partial class CombatDirector : Node
             ResolveAt = castEnd + ComputeGrace(ability),
         };
 
-        _pending.Add(cast);
+        _casts.Add(cast);
 
         // castStart and castEnd are ABSOLUTE times on the shared clock, never
         // "starting now". That is what lets a client whose packet arrived late draw
         // an already part-filled telegraph that still finishes on time.
-        Rpc(MethodName.ShowTelegraph, area.ToDictionary(), ability.DisplayName,
+        Rpc(MethodName.ShowTelegraph, cast.Id, area.ToDictionary(), ability.DisplayName,
             now, castEnd, ability.TelegraphColor, (int)caster.Team, caster.CombatName,
             ability.ShowTelegraph);
 
@@ -263,34 +269,12 @@ public partial class CombatDirector : Node
         double now = Now;
         TickHazards(now);
 
-        if (_pending.Count == 0) return;
-
-        // Walk forwards over the casts that existed when the frame began, and never
-        // remove while walking. Resolving a cast runs arbitrary effects, and those
-        // effects can cancel casts or start new ones; a snapshot bound plus
-        // mark-and-sweep makes that safe instead of a race with the iterator.
-        int existing = _pending.Count;
-
-        for (int i = 0; i < existing; i++)
-        {
-            CastInstance cast = _pending[i];
-            if (cast.Cancelled) continue;
-
-            // A caster that died or was freed mid-cast takes its mechanic with it.
-            // Without this a dead boss keeps hitting people.
-            if (cast.Caster?.Node is null || !GodotObject.IsInstanceValid(cast.Caster.Node) || !cast.Caster.IsAlive)
-            {
-                cast.Cancelled = true;
-                continue;
-            }
-
-            if (now < cast.ResolveAt) continue;
-
-            cast.Cancelled = true;
-            Resolve(cast, now);
-        }
-
-        _pending.RemoveAll(cast => cast.Cancelled);
+        _casts.Process(
+            now,
+            cast => cast.Caster?.Node is not null
+                    && GodotObject.IsInstanceValid(cast.Caster.Node)
+                    && cast.Caster.IsAlive,
+            cast => Resolve(cast, now));
     }
 
     private void Resolve(CastInstance cast, double now)
@@ -338,12 +322,12 @@ public partial class CombatDirector : Node
     /// when headless -- the visual has no authority over anything.
     /// </summary>
     [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
-    private void ShowTelegraph(Godot.Collections.Dictionary areaData, string label,
+    private void ShowTelegraph(long id, Godot.Collections.Dictionary areaData, string label,
                                double castStart, double castEnd, Color color,
                                int casterTeam, string casterName, bool drawFootprint)
     {
         if (drawFootprint)
-            TelegraphView.Spawn(this, TelegraphArea.FromDictionary(areaData), castStart, castEnd, color);
+            TelegraphView.Spawn(this, id, TelegraphArea.FromDictionary(areaData), castStart, castEnd, color);
 
         EmitSignal(SignalName.CastStarted, casterTeam, casterName, label, castStart, castEnd, color);
     }

@@ -258,6 +258,20 @@ offset in the bottom left.
 - Adds, as a `SpawnEffect` — the loop already takes any effect you write.
 - Interrupt and cancellation, so a mechanic can be stopped mid-cast.
 
+## Hazards and interrupts
+
+`Cinders` leaves fourteen seconds of fire where it landed. Hazards reuse the
+footprint of the ability that spawned them, so "the fire lands where the fire was
+telegraphed" is true by construction rather than by two numbers agreeing.
+
+`Rebuke` interrupts a cast and locks the caster out. Stopping a cast is a list
+removal because casts are objects -- but cancellation MARKS rather than removes,
+since an interrupt reaches the queue from inside another cast's resolution.
+
+Both are cleared by an encounter reset, server and client. Fire that outlived a
+wipe would burn the raid the moment it was revived, and a telegraph left on the
+ground for a cast that was interrupted is worse than no telegraph at all.
+
 ## Tests
 
 ```

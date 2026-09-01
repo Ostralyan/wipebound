@@ -145,6 +145,11 @@ mouse_filter = 2
 custom_minimum_size = Vector2(0, 18)
 show_percentage = false
 
+[node name="BossStatuses" type="HBoxContainer" parent="UI/Hud/Encounter"]
+mouse_filter = 2
+alignment = 1
+theme_override_constants/separation = 12
+
 [node name="CastLabel" type="Label" parent="UI/Hud/Encounter"]
 mouse_filter = 2
 horizontal_alignment = 1

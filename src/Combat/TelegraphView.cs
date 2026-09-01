@@ -14,12 +14,19 @@ namespace Wipebound.Combat;
 /// </summary>
 public partial class TelegraphView : Node3D
 {
+    /// Every live view joins this, so a cancelled cast or an encounter reset can
+    /// find and remove its drawing without holding references across the network.
+    public const string GroupName = "telegraph_view";
+
     private const float FlashSeconds = 0.22f;
     private const float GroundOffset = 0.06f;
 
     /// One Shader compiled for the whole game; each telegraph gets its own cheap
     /// ShaderMaterial pointing at it.
     private static Shader _shader;
+
+    /// Matches the CastInstance or HazardInstance that asked for this drawing.
+    public long Id { get; private set; }
 
     private ShaderMaterial _material;
     private double _castStart;
@@ -28,8 +35,8 @@ public partial class TelegraphView : Node3D
     /// Equal to _castEnd for a warning. Later, for a hazard that stays.
     private double _expiresAt;
 
-    public static void Spawn(Node context, TelegraphArea area, double castStart, double castEnd, Color color,
-                             double expiresAt = 0.0)
+    public static void Spawn(Node context, long id, TelegraphArea area, double castStart, double castEnd,
+                             Color color, double expiresAt = 0.0)
     {
         Node root = context.GetTree().GetFirstNodeInGroup("telegraph_root") ?? context.GetParent();
         if (root is null) return;
@@ -37,6 +44,7 @@ public partial class TelegraphView : Node3D
         var view = new TelegraphView
         {
             Name = "Telegraph",
+            Id = id,
             _castStart = castStart,
             _castEnd = castEnd,
             _expiresAt = Mathf.Max(expiresAt, castEnd),
@@ -54,8 +62,24 @@ public partial class TelegraphView : Node3D
             CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
         });
 
+        view.AddToGroup(GroupName);
         root.AddChild(view);
         view.GlobalPosition = new Vector3(area.Center.X, GroundOffset, area.Center.Z);
+    }
+
+    /// <summary>Take one drawing off the ground -- a cast that was interrupted.</summary>
+    public static void EndOne(Node context, long id)
+    {
+        foreach (Node node in context.GetTree().GetNodesInGroup(GroupName))
+            if (node is TelegraphView view && view.Id == id)
+                view.QueueFree();
+    }
+
+    /// <summary>Take everything off the ground -- an encounter reset.</summary>
+    public static void EndAll(Node context)
+    {
+        foreach (Node node in context.GetTree().GetNodesInGroup(GroupName))
+            node.QueueFree();
     }
 
     private void SetAreaUniforms(TelegraphArea area, Color color)

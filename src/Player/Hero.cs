@@ -482,13 +482,33 @@ public partial class Hero : CharacterBody3D, ICombatant
         _body.Visible = IsAlive;
         _nose.Visible = IsAlive;
 
+        // Statuses on the nameplate, not just on your own HUD. Seeing that an ally
+        // is shielded, slowed or carrying a bomb is what lets anyone react to it;
+        // a buff bar only you can read helps only you.
         _label.Text = IsAlive
-            ? $"{PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}"
+            ? $"{PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}{StatusLine()}"
             : $"{PeerId}\nDEAD";
 
         _label.Modulate = !IsAlive ? new Color("64748b")
             : _health.Fraction > 0.35f ? Colors.White
             : new Color("f87171");
+    }
+
+    /// Compact enough to sit over a head without becoming a wall of text.
+    private string StatusLine()
+    {
+        if (_status.Active.Count == 0) return "";
+
+        var line = new System.Text.StringBuilder("\n");
+
+        foreach (ActiveStatus status in _status.Active)
+        {
+            if (line.Length > 1) line.Append(' ');
+            line.Append(status.Definition.DisplayName);
+            if (status.Stacks > 1) line.Append('x').Append(status.Stacks);
+        }
+
+        return line.ToString();
     }
 
     private static float Smoothing(float rate, float dt) => 1f - Mathf.Exp(-rate * dt);

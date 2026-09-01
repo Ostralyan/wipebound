@@ -1,4 +1,5 @@
 using Godot;
+using System.Collections.Generic;
 using Wipebound.Combat;
 using Wipebound.Combat.Commands;
 
@@ -37,6 +38,8 @@ public static class SelfTest
         Dispels();
         ExpiryEffects();
         Cooldowns();
+        CastQueueing();
+        Hazards();
         CommandPayloads();
         SpawnAllocation();
 
@@ -457,8 +460,142 @@ public static class SelfTest
         float longest = 0f;
         foreach (Ability ability in PlayerKit.Build())
             longest = Mathf.Max(longest, ability.Cooldown);
-        Check(longest > new Boss().ResetSeconds,
+        // Freed explicitly: a Node built with new and never parented leaks at exit,
+        // and a test suite that leaks is a test suite nobody trusts about leaks.
+        var probe = new Boss();
+        float resetDelay = probe.ResetSeconds;
+        probe.Free();
+
+        Check(longest > resetDelay,
               $"longest cooldown ({longest}s) exceeds the reset delay, so clearing them matters");
+    }
+
+    // -- cast queue ------------------------------------------------------
+
+    private static CastInstance Cast(ICombatant caster, long id, double resolveAt)
+        => new() { Id = id, Caster = caster, Ability = new Ability(), ResolveAt = resolveAt };
+
+    private static void CastQueueing()
+    {
+        var boss = new Dummy { CombatId = -1, Team = Team.Enemies };
+        var other = new Dummy { CombatId = -2, Team = Team.Enemies };
+        var queue = new CastQueue();
+
+        queue.Add(Cast(boss, 1, 105.0));
+        Check(queue.Count == 1, "a cast joins the queue");
+        Check(queue.IsCasting(boss), "the caster reads as casting");
+        Check(!queue.IsCasting(other), "an unrelated caster does not");
+
+        var resolved = new List<long>();
+        queue.Process(104.0, _ => true, c => resolved.Add(c.Id));
+        Check(resolved.Count == 0, "nothing resolves before its time");
+        Check(queue.Count == 1, "and it stays queued");
+
+        queue.Process(105.0, _ => true, c => resolved.Add(c.Id));
+        Check(resolved.Count == 1, "it resolves exactly on time");
+        Check(queue.Count == 0, "and leaves the queue");
+
+        // Cancelling stops it outright.
+        queue.Add(Cast(boss, 2, 105.0));
+        queue.CancelFor(boss);
+        Check(!queue.IsCasting(boss), "a cancelled cast is no longer casting");
+        resolved.Clear();
+        queue.Process(200.0, _ => true, c => resolved.Add(c.Id));
+        Check(resolved.Count == 0, "a cancelled cast never resolves");
+
+        // A caster that died mid-cast takes its mechanic with it.
+        queue.Add(Cast(boss, 3, 105.0));
+        resolved.Clear();
+        queue.Process(200.0, _ => false, c => resolved.Add(c.Id));
+        Check(resolved.Count == 0, "an invalid caster's cast is dropped, not resolved");
+        Check(queue.Count == 0, "and removed");
+
+        // THE REENTRANCY CASE. An interrupt cancels a cast from inside the
+        // resolution of another one. Removing during that walk threw
+        // IndexOutOfRange the first time an interrupt ever landed in a real fight.
+        var reentrant = new CastQueue();
+        reentrant.Add(Cast(boss, 10, 100.0));
+        reentrant.Add(Cast(other, 11, 100.0));
+        reentrant.Add(Cast(other, 12, 100.0));
+
+        resolved.Clear();
+        bool threw = false;
+
+        try
+        {
+            reentrant.Process(150.0, _ => true, c =>
+            {
+                resolved.Add(c.Id);
+                if (c.Id == 10) reentrant.CancelFor(other);   // the interrupt
+            });
+        }
+        catch (System.Exception)
+        {
+            threw = true;
+        }
+
+        Check(!threw, "cancelling from inside a resolution does not throw");
+        Check(resolved.Count == 1 && resolved[0] == 10, "the interrupted casts never resolved");
+        Check(reentrant.Count == 0, "and the queue is left clean");
+
+        // An effect that starts a cast must not have it resolve inside the same walk.
+        var cascading = new CastQueue();
+        cascading.Add(Cast(boss, 20, 100.0));
+        resolved.Clear();
+        cascading.Process(150.0, _ => true, c =>
+        {
+            resolved.Add(c.Id);
+            if (c.Id == 20) cascading.Add(Cast(boss, 21, 0.0));
+        });
+        Check(resolved.Count == 1, "a cast started during resolution waits for the next tick");
+        Check(cascading.Count == 1, "and is still queued");
+
+        var everything = new CastQueue();
+        everything.Add(Cast(boss, 30, 100.0));
+        everything.Add(Cast(other, 31, 100.0));
+        Check(everything.CancelAll().Count == 2, "cancel-all reports what it stopped");
+        Check(everything.Count == 0, "and empties the queue");
+    }
+
+    // -- hazards ---------------------------------------------------------
+
+    private static void Hazards()
+    {
+        var boss = new Dummy { CombatId = -1, Team = Team.Enemies };
+        var definition = new Hazard { Id = "test_fire", DisplayName = "Fire", Duration = 14f, TickInterval = 1f };
+
+        HazardInstance Fire(double from) => new()
+        {
+            Id = 1, Definition = definition, Owner = boss,
+            Area = new TelegraphArea(TelegraphShape.Circle, Vector3.Zero, 0f, 6f),
+            ExpiresAt = from + definition.Duration, NextTickAt = from,
+        };
+
+        var field = new HazardField();
+        field.Add(Fire(100.0));
+        Check(field.Count == 1, "a hazard joins the field");
+
+        Check(field.Advance(100.0).Count == 1, "it burns immediately");
+        Check(field.Advance(100.5).Count == 0, "and not again before its interval");
+        Check(field.Advance(101.0).Count == 1, "and again once the interval elapses");
+
+        Check(field.Advance(120.0).Count == 0, "an expired hazard stops burning");
+        Check(field.Count == 0, "and is dropped");
+
+        // The bug this is here for: Cinders lasts fourteen seconds and an encounter
+        // reset takes eight, so fire from the previous attempt was still burning
+        // when the raid was revived into it.
+        var lingering = new HazardField();
+        lingering.Add(Fire(100.0));
+        Check(definition.Duration > 8f, "the hazard genuinely outlives a reset, so clearing it matters");
+        lingering.Clear();
+        Check(lingering.Count == 0, "an encounter reset clears the ground");
+        Check(lingering.Advance(101.0).Count == 0, "and nothing burns afterwards");
+
+        // Geometry is what decides who is caught, and it is already pinned.
+        TelegraphArea area = Fire(100.0).Area;
+        Check(area.Contains(new Vector3(3f, 0f, 0f)), "a hazard catches what stands in it");
+        Check(!area.Contains(new Vector3(9f, 0f, 0f)), "and not what stands clear");
     }
 
     // -- command payloads ------------------------------------------------

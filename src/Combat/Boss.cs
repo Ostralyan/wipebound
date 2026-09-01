@@ -140,6 +140,11 @@ public partial class Boss : Node3D, ICombatant
 
         _wipeAt = 0.0;
 
+        // An interrupt is supposed to buy a window, not merely delay one cast by an
+        // instant. Without this the lockout it applies did nothing at all and the
+        // boss simply started its next mechanic on the following frame.
+        if (_status.Silenced) return;
+
         // The director owns casts in flight. Asking it, rather than tracking a flag
         // here, is what makes overlapping mechanics a data change instead of a rewrite.
         if (CombatDirector.Instance.IsCasting(this)) return;
@@ -258,7 +263,10 @@ public partial class Boss : Node3D, ICombatant
         _resetAt = 0.0;
         _wipeAt = 0.0;
         _engaged = false;
-        CombatDirector.Instance.CancelFor(this);
+
+        // Not just this boss's casts: ground left burning from the previous attempt
+        // would still be there when the raid comes back to life in it.
+        CombatDirector.Instance.ResetEncounter();
         ReviveRaid();
         GD.Print($"[boss] {DisplayName} reset.");
     }
