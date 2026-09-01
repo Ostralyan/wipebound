@@ -352,15 +352,7 @@ public partial class EncounterHud : Control
         NetworkManager net = NetworkManager.Instance;
         NetClock clock = NetClock.Instance;
 
-        // Mode is not enough, and neither is a non-null peer. When a server
-        // drops there is a window where the mode still says client and the peer
-        // object still exists, but its connection is already down -- and asking
-        // that for a unique id is asking an inactive multiplayer instance.
-        MultiplayerPeer peer = Multiplayer.MultiplayerPeer;
-        bool live = peer is not null
-                    && peer.GetConnectionStatus() != MultiplayerPeer.ConnectionStatus.Disconnected;
-
-        if (!net.InSession || !live)
+        if (!net.InSession)
         {
             _netDebug.Text = "offline";
             return;
@@ -368,7 +360,7 @@ public partial class EncounterHud : Control
 
         _netDebug.Text = net.IsServer
             ? $"{net.Mode}  |  worst peer rtt {clock.WorstPeerRtt * 1000.0:0}ms  |  serving the clock"
-            : $"client {Multiplayer.GetUniqueId()}  |  rtt {clock.Rtt * 1000.0:0}ms  " +
+            : $"client {net.LocalPeerId}  |  rtt {clock.Rtt * 1000.0:0}ms  " +
               $"|  clock {clock.OffsetSeconds:+0.000;-0.000}s  |  {(clock.Synced ? "synced" : "SYNCING")}";
     }
 }

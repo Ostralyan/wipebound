@@ -46,6 +46,17 @@ public partial class NetworkManager : Node
 
     public bool InSession => Mode != NetMode.Offline;
 
+    /// <summary>
+    /// Our own peer id, remembered rather than asked for.
+    ///
+    /// The HUD used to call Multiplayer.GetUniqueId() every frame. An ENet peer
+    /// stops being able to answer that the moment it goes inactive, and it goes
+    /// inactive before anything we can observe changes -- guarding on the mode,
+    /// on the peer being non-null, and on its connection status all still let
+    /// the call through on a server drop.
+    /// </summary>
+    public int LocalPeerId { get; private set; }
+
     private Node _heroContainer;
     private double _connectDeadline;
     private PackedScene _heroScene;
@@ -158,6 +169,7 @@ public partial class NetworkManager : Node
         }
 
         Multiplayer.MultiplayerPeer = peer;
+        LocalPeerId = ServerPeerId;
         Mode = dedicated ? NetMode.DedicatedServer : NetMode.Host;
         Status(dedicated
             ? $"Dedicated server listening on {port}"
@@ -210,6 +222,7 @@ public partial class NetworkManager : Node
     private void ForgetSession(string reason, bool dropOurs)
     {
         Mode = NetMode.Offline;
+        LocalPeerId = 0;
         _connectDeadline = 0.0;
         _slotByPeer.Clear();
 
@@ -324,7 +337,8 @@ public partial class NetworkManager : Node
     private void OnConnectedToServer()
     {
         _connectDeadline = 0.0;
-        Status($"Connected as peer {Multiplayer.GetUniqueId()}.");
+        LocalPeerId = Multiplayer.GetUniqueId();
+        Status($"Connected as peer {LocalPeerId}.");
 
         // Nothing of ours exists on the server until it knows what to build.
         RpcId(ServerPeerId, MethodName.DeclareClass, PreferredClassId);

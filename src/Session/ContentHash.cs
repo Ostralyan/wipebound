@@ -110,6 +110,8 @@ public static class ContentHash
             ["arena"] = Player.Hero.ArenaRadius,
             ["speedMargin"] = Player.Hero.SpeedChangeMargin,
             ["ack"] = Player.Hero.AcknowledgeDistance,
+            ["ackTeleport"] = Player.Hero.TeleportAcknowledgeSeconds,
+            ["ackPush"] = Player.Hero.PushAcknowledgeSeconds,
             ["tolerance"] = MovementValidator.SpeedTolerance,
             ["burst"] = MovementValidator.BurstSeconds,
             ["garbage"] = MovementValidator.GarbageClaimPenalty,
@@ -235,13 +237,28 @@ public static class ContentHash
                 return;
 
             case Variant.Type.Dictionary:
-                builder.Append('{');
+                // Sorted by rendered entry, for the reason properties are: two
+                // builds of the same content must produce the same bytes, and
+                // engine iteration order is not promised. Nothing tuned uses a
+                // dictionary today, so this changes no fingerprint -- it is here
+                // so that stays true when something does.
+                var entries = new List<string>();
                 foreach (var pair in value.AsGodotDictionary())
                 {
-                    Append(builder, pair.Key, depth + 1, path);
-                    builder.Append(':');
-                    Append(builder, pair.Value, depth + 1, path);
-                    builder.Append(',');
+                    var one = new StringBuilder();
+                    Append(one, pair.Key, depth + 1, path);
+                    one.Append(':');
+                    Append(one, pair.Value, depth + 1, path);
+                    one.Append(',');
+                    entries.Add(one.ToString());
+                }
+
+                entries.Sort(StringComparer.Ordinal);
+
+                builder.Append('{');
+                foreach (string entry in entries)
+                {
+                    builder.Append(entry);
                 }
                 builder.Append('}');
                 return;

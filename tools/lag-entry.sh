@@ -9,7 +9,9 @@
 # harness bug.
 set -e
 
-if [ -n "${LAG_MS:-}" ]; then
+# Zero is "do not shape", not "shape with zero": netem rejects a 0% loss rule,
+# and set -e then kills the container before the game ever starts.
+if [ -n "${LAG_MS:-}" ] && [ "${LAG_MS}" != "0" ]; then
   tc qdisc add dev eth0 root netem \
      delay "${LAG_MS}ms" "${JITTER_MS:-0}ms" distribution normal \
      loss "${LOSS_PCT:-0}%"

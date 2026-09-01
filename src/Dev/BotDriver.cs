@@ -36,6 +36,10 @@ public partial class BotDriver : Node
     /// proves nothing either way.
     private const double ReportEvery = 5.0;
 
+    /// Comfortably more than one physics tick at 60Hz, and about as long as a
+    /// person leans on a key.
+    private const double HoldFor = 0.2;
+
     private static readonly string[] Directions =
     {
         Bindings.MoveUp, Bindings.MoveDown, Bindings.MoveLeft, Bindings.MoveRight,
@@ -47,6 +51,8 @@ public partial class BotDriver : Node
     private double _nextTurn;
     private double _nextCast;
     private double _nextReport;
+    private string _castAction;
+    private double _castUntil;
     private int _held = -1;
     private int _heldToo = -1;
 
@@ -71,6 +77,8 @@ public partial class BotDriver : Node
             _nextTurn = now + TurnEvery;
             Turn();
         }
+
+        if (_castAction is not null && now >= _castUntil) ReleaseCast();
 
         if (now >= _nextCast)
         {
@@ -107,16 +115,30 @@ public partial class BotDriver : Node
         }
     }
 
+    /// <summary>
+    /// Press a button, and HOLD it.
+    ///
+    /// This used to press and release inside one _Process call. Hero polls
+    /// abilities in _PhysicsProcess, so the release always landed before any
+    /// physics tick saw the press, and the bot never cast anything at all. The
+    /// evidence was in every run record -- damage_done: 0 for every bot -- and
+    /// it was printed and not read.
+    /// </summary>
     private void Cast()
     {
-        int slot = (int)(_rng.Randi() % (uint)Bindings.AbilitySlots);
-        string action = Bindings.Ability(slot);
+        ReleaseCast();
 
-        // Pressed and released within the frame. The hero polls every physics
-        // tick, so one press is one attempt, and the server refuses whatever is
-        // on cooldown or unaffordable -- which is also worth exercising.
-        Input.ActionPress(action);
-        Input.ActionRelease(action);
+        int slot = (int)(_rng.Randi() % (uint)Bindings.AbilitySlots);
+        _castAction = Bindings.Ability(slot);
+        _castUntil = Time.GetTicksMsec() / 1000.0 + HoldFor;
+        Input.ActionPress(_castAction);
+    }
+
+    private void ReleaseCast()
+    {
+        if (_castAction is null) return;
+        Input.ActionRelease(_castAction);
+        _castAction = null;
     }
 
     private void Release()

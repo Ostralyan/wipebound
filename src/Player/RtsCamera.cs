@@ -76,7 +76,10 @@ public partial class RtsCamera : Node3D
             LockedToHero = false;
             _focus += pan * PanSpeed * dt;
         }
-        else if (LockedToHero && _target is not null && IsInstanceValid(_target))
+        // IsInstanceValid is not enough. A replicated hero stays valid for a
+        // while after the engine takes it out of the tree on a server drop, and
+        // reading GlobalPosition in that window is an error with our name on it.
+        else if (LockedToHero && _target is not null && IsInstanceValid(_target) && _target.IsInsideTree())
         {
             _focus = _focus.Lerp(_target.GlobalPosition, 1f - Mathf.Exp(-FollowSmoothing * dt));
         }

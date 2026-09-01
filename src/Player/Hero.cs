@@ -34,6 +34,11 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// the client having acknowledged it.
     public const float AcknowledgeDistance = 1.0f;
 
+    /// Floors for how long the server waits to be told a commanded move landed.
+    /// The real round trip is ADDED to these, never assumed to be inside them.
+    public const float TeleportAcknowledgeSeconds = 1.0f;
+    public const float PushAcknowledgeSeconds = 0.6f;
+
     [ExportGroup("Movement")]
     [Export] public float MoveSpeed = 7.0f;
     [Export] public float TurnSpeed = 14.0f;
@@ -88,7 +93,16 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// The peer that owns this hero, carried by the node's name (see NetworkManager).
     public int PeerId { get; private set; }
 
-    public bool IsLocalPlayer => PeerId == Multiplayer.GetUniqueId();
+    /// <summary>
+    /// Whether this hero is the one at these controls.
+    ///
+    /// Compared against the id NetworkManager remembered, not against one asked
+    /// of the peer. This is read every physics frame by every hero and by the
+    /// HUD, and an ENet peer stops being able to answer for its own id the
+    /// moment it goes inactive -- so on a server drop the old form raised an
+    /// error per hero per frame until the scene came down.
+    /// </summary>
+    public bool IsLocalPlayer => PeerId != 0 && PeerId == NetworkManager.Instance.LocalPeerId;
 
     // --- ICombatant ---
     public string CombatName => $"hero {PeerId}";
@@ -329,7 +343,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         _movement.Reset(destination);
         _awaitingAcknowledgement = true;
-        _clampGraceUntil = Now + 1.0;
+        _clampGraceUntil = Now + TeleportAcknowledgeSeconds + RoundTrip();
         RpcId(PeerId, MethodName.SnapTo, destination);
     }
 
@@ -342,7 +356,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         // The client slides over travelSeconds, so it reports stale ground until it
         // arrives. Wait for it to say so rather than chasing it backwards.
         _awaitingAcknowledgement = true;
-        _clampGraceUntil = Now + travelSeconds + 0.6;
+        _clampGraceUntil = Now + travelSeconds + PushAcknowledgeSeconds + RoundTrip();
         RpcId(PeerId, MethodName.BeginPush, destination, travelSeconds);
     }
 
@@ -576,6 +590,21 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// and has travelled (one round trip), so the grace is exactly those two things
     /// plus headroom for jitter.
     /// </summary>
+    /// <summary>
+    /// How long a server-commanded move needs before the client's own claim can
+    /// possibly reflect it: the order has to travel there and the reply back.
+    ///
+    /// The two constants it is added to were tuned on localhost, where this term
+    /// is zero. That is the exact mistake SpeedChangeGrace was written to fix,
+    /// made again two methods away and left there -- and it does not show up
+    /// until somebody is knocked back on a real connection, because a hero that
+    /// is never displaced never waits to acknowledge anything.
+    ///
+    /// Measured at 80ms round trip: three honest bots were billed 219cm of
+    /// overreach against a 200cm ranked limit, and 0cm with this term present.
+    /// </summary>
+    private static double RoundTrip() => NetClock.Instance?.WorstPeerRtt ?? 0.0;
+
     private double SpeedChangeGrace()
     {
         double publish = _statsSync is null
