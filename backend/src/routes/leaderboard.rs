@@ -10,9 +10,9 @@ use crate::{error::AppError, models::RunRow, schema::runs, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct TopQuery {
-    /// Ladders are per balance patch. Omitting it does NOT mix seasons -- it falls
-    /// back to every hash configured as ranked, because a ladder that quietly
-    /// compares runs from different balance numbers is worse than no ladder.
+    /// Ladders are per balance patch. Omitting it selects the CURRENT one -- never
+    /// several at once, because a duration-sorted list spanning different balance
+    /// numbers is worse than no ladder: it looks like a ranking and is not one.
     pub content_hash: Option<String>,
     pub limit: Option<i64>,
 }
@@ -29,19 +29,17 @@ pub async fn top(
 
     let mut conn = state.pool.get().await?;
 
-    let mut statement = runs::table
+    // Exactly one hash, always. Defaulting to "every hash we accept" produced a
+    // single duration-sorted list spanning incompatible balance numbers, which is
+    // worse than no ladder because it looks like one.
+    let hash = query
+        .content_hash
+        .unwrap_or_else(|| state.config.current_content_hash.clone());
+
+    let rows = runs::table
         .filter(runs::boss.eq(boss))
         .filter(runs::rankable.eq(true))
-        .into_boxed();
-
-    statement = match query.content_hash {
-        Some(hash) => statement.filter(runs::content_hash.eq(hash)),
-        None => {
-            statement.filter(runs::content_hash.eq_any(state.config.ranked_content_hashes.clone()))
-        }
-    };
-
-    let rows = statement
+        .filter(runs::content_hash.eq(hash))
         .select(RunRow::as_select())
         .order(runs::duration_ms.asc())
         .limit(limit)

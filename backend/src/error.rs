@@ -13,6 +13,8 @@ pub enum AppError {
     Unauthorised,
     #[error("{0}")]
     Invalid(String),
+    #[error("{0}")]
+    Conflict(String),
     #[error("internal error")]
     Internal(String),
 }
@@ -23,6 +25,7 @@ impl IntoResponse for AppError {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Unauthorised => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::Invalid(_) => (StatusCode::UNPROCESSABLE_ENTITY, self.to_string()),
+            AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
 
             // Logged in full, reported as nothing. A stranger learns that it broke,
             // never how.

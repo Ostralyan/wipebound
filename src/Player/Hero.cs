@@ -38,6 +38,10 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// </summary>
     public const double SpeedChangeGraceSeconds = 0.4;
 
+    /// How close a claim must land to a server-commanded destination to count as
+    /// the client having acknowledged it.
+    public const float AcknowledgeDistance = 1.0f;
+
     [ExportGroup("Movement")]
     [Export] public float MoveSpeed = 7.0f;
     [Export] public float TurnSpeed = 14.0f;
@@ -160,6 +164,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// the client's reported position legitimately disagrees with the server's.
     /// The speed clamp stands down until this passes rather than fighting it.
     private double _clampGraceUntil;
+    private bool _awaitingAcknowledgement;
 
     // Speed used for billing, which lags a slowdown by the replication window.
     private float _billingSpeed = -1f;
@@ -332,6 +337,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         if (!IsServer) return;
 
         _movement.Reset(destination);
+        _awaitingAcknowledgement = true;
         _clampGraceUntil = Now + 1.0;
         RpcId(PeerId, MethodName.SnapTo, destination);
     }
@@ -342,10 +348,10 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         _movement.Reset(destination);
 
-        // The client slides over travelSeconds, so its reported position trails the
-        // server's for that long. Suspend the clamp rather than have it read a
-        // mechanic as cheating and drag the hero back.
-        _clampGraceUntil = Now + travelSeconds + 0.4;
+        // The client slides over travelSeconds, so it reports stale ground until it
+        // arrives. Wait for it to say so rather than chasing it backwards.
+        _awaitingAcknowledgement = true;
+        _clampGraceUntil = Now + travelSeconds + 0.6;
         RpcId(PeerId, MethodName.BeginPush, destination, travelSeconds);
     }
 
@@ -492,14 +498,24 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     private void UpdateServerPosition(float dt)
     {
-        if (Now < _clampGraceUntil)
+        if (_awaitingAcknowledgement)
         {
-            // The server moved this hero itself -- a respawn, a knockback -- so
-            // reconciling is not cheating and must not be billed. Follow rather
-            // than freeze: standing still here while the client legitimately walked
-            // meant the whole gap was charged the moment the window closed.
-            _movement.Follow(NetPosition, BillingSpeed(Now), dt);
-            return;
+            // The server moved this hero itself. Its destination is authoritative
+            // until the client confirms arriving there -- chasing the client's
+            // trailing claim would drag the authoritative position back onto ground
+            // the hero has already been pushed off, and combat would resolve there.
+            //
+            // Nothing is billed meanwhile, and the allowance keeps filling so there
+            // is no cliff when the wait ends.
+            bool acknowledged = _movement.DistanceFrom(NetPosition) <= AcknowledgeDistance;
+
+            if (!acknowledged && Now < _clampGraceUntil)
+            {
+                _movement.Idle(BillingSpeed(Now), dt);
+                return;
+            }
+
+            _awaitingAcknowledgement = false;
         }
 
         // MoveSync is an untrusted input channel exactly like CommandRouter, and is

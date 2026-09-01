@@ -73,19 +73,30 @@ public sealed class MovementValidator
     /// </summary>
     public float Accept(Vector3 claimed, float maxSpeed, float delta) => Move(claimed, maxSpeed, delta, bill: true);
 
+    /// <summary>How far a claim sits from where the server put the body.</summary>
+    public float DistanceFrom(Vector3 point)
+        => new Vector3(point.X - Validated.X, 0f, point.Z - Validated.Z).Length();
+
     /// <summary>
-    /// Track a claim without billing for it, for windows where the SERVER moved
-    /// the body -- a respawn, a knockback -- and the client is reconciling.
+    /// Hold position while accruing allowance, for windows where the SERVER moved
+    /// the body and the client has not confirmed yet.
     ///
-    /// Freezing instead of following was subtly wrong and expensive: the validator
-    /// stood still while the client legitimately walked, and the entire gap was
-    /// then billed the instant the window closed. A one second window at seven
-    /// metres a second charged nearly seven metres, every death.
+    /// Following the claim instead was wrong in a way that mattered: after a
+    /// knockback the authoritative position is the destination, and the client is
+    /// still reporting where it was before the push. Chasing that claim dragged the
+    /// server's copy BACKWARDS onto stale ground, and combat resolved against it.
     ///
-    /// It still only moves at a legal pace, so a knockback cannot be spent as a
-    /// free teleport.
+    /// Freezing without accruing was the other wrong answer -- that is what charged
+    /// an honest player seven metres every death -- so the allowance keeps filling
+    /// and there is no cliff when the window closes.
     /// </summary>
-    public void Follow(Vector3 claimed, float maxSpeed, float delta) => Move(claimed, maxSpeed, delta, bill: false);
+    public void Idle(float maxSpeed, float delta)
+    {
+        if (!Untrusted.IsFinite(delta) || delta <= 0f) return;
+
+        float rate = Mathf.Max(0f, maxSpeed) * SpeedTolerance;
+        Allowance = Mathf.Min(Allowance + rate * delta, rate * BurstSeconds);
+    }
 
     private float Move(Vector3 claimed, float maxSpeed, float delta, bool bill)
     {

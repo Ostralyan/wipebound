@@ -172,6 +172,19 @@ public static class SelfTest
               $"ten idle seconds bank only a fraction of a second of travel ({banked:0.00}m)");
         Check(blink > 190f, "and the rest of a teleport is charged");
 
+        // A server-commanded destination must not be dragged backwards by the
+        // client's trailing claim. Idle holds position and accrues; it never chases.
+        var pushed = new MovementValidator { ArenaRadius = 1000f };
+        pushed.Reset(new Vector3(19f, 0f, 0f));
+        for (int tick = 0; tick < 30; tick++) pushed.Idle(nominal, dt);
+        Near(pushed.Validated.X, 19f, "waiting for acknowledgement holds the commanded destination");
+        Check(pushed.Allowance > 0f, "and keeps accruing, so there is no cliff when the wait ends");
+
+        // Which is exactly what a knockback looks like: destination 19, client
+        // still reporting 10 while it slides.
+        Near(pushed.DistanceFrom(new Vector3(10f, 0f, 0f)), 9f, "distance from a stale claim is measurable");
+        Check(pushed.DistanceFrom(new Vector3(18.7f, 0f, 0f)) < 1f, "and an arrived claim reads as acknowledged");
+
         // A stationary claim never drifts.
         var still = new MovementValidator();
         still.Reset(new Vector3(3f, 0f, 3f));

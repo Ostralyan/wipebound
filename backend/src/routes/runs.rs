@@ -102,6 +102,43 @@ pub async fn submit(
         })
         .await?;
 
+    // A duplicate must answer with what is STORED, not with a verdict computed from
+    // the payload that arrived second. Reporting the new payload's verdict for a
+    // run that was never written meant a retry could describe a record that does
+    // not exist -- and a DIFFERENT payload reusing an id is not a retry at all, so
+    // it is refused rather than silently ignored.
+    if inserted == 0 {
+        let stored = runs::table
+            .find(&submission.run_id)
+            .select(RunRow::as_select())
+            .first(&mut conn)
+            .await
+            .optional()?
+            .ok_or_else(|| AppError::Internal("run vanished between insert and read".into()))?;
+
+        if stored.outcome != submission.outcome
+            || stored.duration_ms != submission.duration_ms
+            || stored.content_hash != submission.content_hash
+            || stored.authority != submission.authority
+            || stored.worst_overreach_cm != submission.worst_overreach_cm
+        {
+            return Err(AppError::Conflict(format!(
+                "run {} already exists with different contents",
+                submission.run_id
+            )));
+        }
+
+        return Ok((
+            StatusCode::OK,
+            Json(json!({
+                "run_id": stored.id,
+                "rankable": stored.rankable,
+                "reason": stored.unrankable_reason,
+                "duplicate": true,
+            })),
+        ));
+    }
+
     tracing::info!(
         run = %submission.run_id,
         boss = %submission.boss,
