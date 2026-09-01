@@ -1,0 +1,28 @@
+# Local development database for the ladder service.
+#
+# The init SQL is mounted rather than run by a migration tool so a fresh clone
+# needs nothing installed beyond Docker. For anything long-lived, use the same
+# files under migrations/ with `diesel migration run`.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: wipebound-postgres
+    environment:
+      POSTGRES_USER: wipebound
+      POSTGRES_PASSWORD: wipebound
+      POSTGRES_DB: wipebound
+    # High and overridable, because 5432 and 5433 are routinely taken by other
+    # projects' containers. Set WIPEBOUND_DB_PORT to move it.
+    ports:
+      - "${WIPEBOUND_DB_PORT:-55432}:5432"
+    volumes:
+      - wipebound-pgdata:/var/lib/postgresql/data
+      - ./migrations/2026-08-31-000000_init/up.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wipebound -d wipebound"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  wipebound-pgdata:

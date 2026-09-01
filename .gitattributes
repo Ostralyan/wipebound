@@ -7,6 +7,10 @@
 *.godot  text eol=lf
 *.gd     text eol=lf
 *.cs     text eol=lf diff=csharp
+*.rs     text eol=lf diff=rust
+*.toml   text eol=lf
+*.sql    text eol=lf
+*.yml    text eol=lf
 *.csproj text eol=lf
 *.sln    text eol=crlf
 
