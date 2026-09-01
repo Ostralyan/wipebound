@@ -51,12 +51,32 @@ public partial class RunRecorder : Node
         if (!NetworkManager.Instance.IsServer || !_inProgress) return;
         _inProgress = false;
 
+        // A wipe leaves dead heroes in the tree; an EMPTY roster means everybody
+        // disconnected, so nobody played this attempt and there is nothing to
+        // record. Found by running the whole stack: the backend correctly refused
+        // the rosterless run this used to send, which is the right answer to the
+        // wrong question being asked.
+        if (RosterSize() == 0)
+        {
+            GD.Print("[run] attempt abandoned: nobody was left in it");
+            return;
+        }
+
         Godot.Collections.Dictionary record = Build(victory);
         GD.Print($"[run] {Json.Stringify(record)}");
 
         // Where the POST to the backend goes. Deliberately not written yet: the
         // shape has to be settled before anything depends on it.
         Submitted?.Invoke(record);
+    }
+
+    private int RosterSize()
+    {
+        int count = 0;
+        foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
+            if (node is Hero) count++;
+
+        return count;
     }
 
     /// <summary>Hook for whatever ships the record onward.</summary>

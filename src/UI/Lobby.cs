@@ -20,10 +20,15 @@ public partial class Lobby : PanelContainer
         _joinButton = GetNode<Button>("Margin/Rows/JoinButton");
         _leaveButton = GetNode<Button>("Margin/Rows/LeaveButton");
 
-        // No Host button. Whoever hosts IS the authority and can forge anything, so
-        // a player-hosted session can never produce a rankable run. Local testing
-        // uses --host, which still works and says so in the log.
-        _hostButton.Visible = false;
+        // Hosting is offered again, labelled for what it costs.
+        //
+        // Removing this button was the wrong mechanism for the right policy. What
+        // protects the ladder is that a run record carries the authority it was
+        // played under and the backend refuses anything not marked dedicated --
+        // and that guard holds whether or not this button exists. Hiding it
+        // protected nothing and left the game with no way to start from the UI.
+        _hostButton.Text = "Host (practice, not ranked)";
+        _hostButton.Pressed += () => NetworkManager.Instance.Host();
         _joinButton.Pressed += () => NetworkManager.Instance.Join(_address.Text.StripEdges());
         _leaveButton.Pressed += () => NetworkManager.Instance.Leave();
 
@@ -36,7 +41,7 @@ public partial class Lobby : PanelContainer
     private void RefreshButtons()
     {
         bool inSession = NetworkManager.Instance.InSession;
-        _hostButton.Visible = false;
+        _hostButton.Visible = !inSession;
         _joinButton.Visible = !inSession;
         _address.Visible = !inSession;
         _leaveButton.Visible = inSession;

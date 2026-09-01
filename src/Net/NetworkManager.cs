@@ -17,6 +17,10 @@ public partial class NetworkManager : Node
     public const int DefaultPort = 7777;
     public const int MaxPlayers = 8;
 
+    /// ENet retries a dead address for a long time before admitting defeat, so
+    /// without this the lobby sits on "Connecting..." indefinitely and looks hung.
+    public const double ConnectTimeoutSeconds = 6.0;
+
     /// In Godot's high-level multiplayer the server is always peer 1.
     public const int ServerPeerId = 1;
 
@@ -43,6 +47,7 @@ public partial class NetworkManager : Node
     public bool InSession => Mode != NetMode.Offline;
 
     private Node _heroContainer;
+    private double _connectDeadline;
     private PackedScene _heroScene;
     /// Which spawn slot each peer holds, so a slot vacated mid-session is reused
     /// rather than handed out twice.
@@ -138,6 +143,7 @@ public partial class NetworkManager : Node
 
         Multiplayer.MultiplayerPeer = peer;
         Mode = NetMode.Client;
+        _connectDeadline = Clock() + ConnectTimeoutSeconds;
         Status($"Connecting to {address}:{port}...");
         EmitSignal(SignalName.ModeChanged);
         return true;
@@ -148,6 +154,7 @@ public partial class NetworkManager : Node
         Multiplayer.MultiplayerPeer?.Close();
         Multiplayer.MultiplayerPeer = null;
         Mode = NetMode.Offline;
+        _connectDeadline = 0.0;
         _slotByPeer.Clear();
 
         if (_heroContainer is not null)
@@ -215,7 +222,30 @@ public partial class NetworkManager : Node
     }
 
     private void OnConnectedToServer()
-        => Status($"Connected as peer {Multiplayer.GetUniqueId()}.");
+    {
+        _connectDeadline = 0.0;
+        Status($"Connected as peer {Multiplayer.GetUniqueId()}.");
+    }
+
+    private static double Clock() => Time.GetTicksMsec() / 1000.0;
+
+    public override void _Process(double delta)
+    {
+        if (Mode != NetMode.Client || _connectDeadline <= 0.0) return;
+
+        MultiplayerPeer peer = Multiplayer.MultiplayerPeer;
+        if (peer is not null && peer.GetConnectionStatus() == MultiplayerPeer.ConnectionStatus.Connected)
+        {
+            _connectDeadline = 0.0;
+            return;
+        }
+
+        if (Clock() < _connectDeadline) return;
+
+        _connectDeadline = 0.0;
+        Leave();
+        Status("Could not reach a server there. Is one running?");
+    }
 
     private void OnConnectionFailed()
     {
