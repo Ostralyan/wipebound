@@ -32,9 +32,22 @@ public partial class NetClock : Node
     private const double SteadyInterval = 2.0;
     private const int WindowSize = 12;
 
+    /// <summary>
     /// A client reports its own round trip so the server can size the resolve
     /// grace. That means a modified client could claim a huge one and delay
     /// mechanics for the whole raid, so the server never credits more than this.
+    ///
+    /// It is therefore also the LATENCY CEILING FOR RANKED PLAY, and that is not
+    /// an accident of this number, it is what this number means. Every grace
+    /// sized from a round trip -- the speed-change hold, the knockback
+    /// acknowledgement -- stops growing here, so a player further away than this
+    /// starts being billed for movement they made honestly.
+    ///
+    /// Measured with tools/latency-test.sh: 300ms round trip with 3% loss is
+    /// clean, 600ms with 8% is not. Raising this widens the ceiling and the cheat
+    /// window together, and at that distance a 1.6s telegraph leaves under a
+    /// second to react, so the fight is lost before the ladder is.
+    /// </summary>
     public const double MaxCreditedRtt = 0.35;
 
     private readonly List<(double Rtt, double Offset)> _samples = new();

@@ -12,6 +12,13 @@
 # NTP-style clock estimates its offset wrong by half of any asymmetry -- a harness
 # artefact that would read exactly like a clock bug.
 #
+# The supported envelope is set by NetClock.MaxCreditedRtt, which is 350ms: every
+# grace sized from a round trip stops growing there. Measured behaviour:
+#
+#     40ms  each way, 1% loss  -> clean
+#     150ms each way, 3% loss  -> clean
+#     300ms each way, 8% loss  -> billed, correctly, for being past the ceiling
+#
 #   tools/latency-test.sh [one-way-ms] [jitter-ms] [loss-%] [clients] [frames]
 set -euo pipefail
 

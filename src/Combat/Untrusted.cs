@@ -46,9 +46,26 @@ public sealed class MovementValidator
     /// additive: an additive per-tick tolerance quietly becomes a speed allowance.
     public const float SpeedTolerance = 1.25f;
 
-    /// How much unspent allowance can be banked, in seconds of travel. Enough to
-    /// ride out several dropped updates, far too little to bank a teleport.
-    public const float BurstSeconds = 0.35f;
+    /// <summary>
+    /// How much unspent allowance can be banked, in seconds of travel.
+    ///
+    /// This is the size of the gap between position updates that a player is
+    /// allowed to have. A claim arriving after a quiet stretch carries all the
+    /// movement of that stretch at once, and the bank is what pays for it.
+    ///
+    /// It is also, exactly, the free instant reposition available to a modified
+    /// client: bank the allowance, spend it in one claim, wait, repeat. It buys
+    /// no extra average speed -- the refill takes as long as the dodge saved --
+    /// so what it costs is a dodge, not a race.
+    ///
+    /// 0.35s covered gaps up to 0.44s, which is fine on a LAN and not fine at
+    /// 300ms with packet loss, where honest players were billed for the bunching
+    /// their network did to them. 0.6s covers gaps to 0.75s. The price is that
+    /// the free dodge grows from about 3m to about 5m, and that is the trade:
+    /// refusing honest players from the ladder is worse than a cheat that still
+    /// has to kill the boss.
+    /// </summary>
+    public const float BurstSeconds = 0.6f;
 
     /// Metres of overreach charged for a single non-finite claim. Garbage is not
     /// "slightly too fast", it is an attempt to poison this copy, and it should not
@@ -60,11 +77,18 @@ public sealed class MovementValidator
     public Vector3 Validated { get; private set; }
     public float Allowance { get; private set; }
 
+    /// The last claim that was actually judged, so that standing discrepancy is
+    /// not re-judged every tick. See Move.
+    private Vector3 _judged;
+    private bool _everJudged;
+
     /// <summary>The server placing the body itself -- a spawn, a respawn, a knockback.</summary>
     public void Reset(Vector3 at)
     {
         Validated = new Vector3(at.X, 0f, at.Z);
         Allowance = 0f;
+        _judged = Validated;
+        _everJudged = false;
     }
 
     /// <summary>
@@ -113,6 +137,21 @@ public sealed class MovementValidator
         if (ArenaRadius > 0f && target.Length() > ArenaRadius)
             target = target.Normalized() * ArenaRadius;
 
+        // A claim is judged ONCE.
+        //
+        // This runs every physics tick against the latest claim held, not once
+        // per packet, so a claim the server cannot reach yet stays in front of it
+        // for many ticks. Billing the shortfall each time charged a player over
+        // and over for a single stretch of walking: an honest walker whose
+        // updates arrived once a second was billed 3394m for 420m travelled,
+        // because the same unreached metres were re-judged sixty times a second.
+        //
+        // Catching up to a claim already judged is free. Only new information can
+        // be an accusation.
+        bool alreadyJudged = _everJudged && target == _judged;
+        _judged = target;
+        _everJudged = true;
+
         Vector3 offset = target - Validated;
         float distance = offset.Length();
         if (distance <= 0f) return 0f;
@@ -127,6 +166,6 @@ public sealed class MovementValidator
         Validated += offset / distance * Allowance;
         float overreach = distance - Allowance;
         Allowance = 0f;
-        return bill ? overreach : 0f;
+        return bill && !alreadyJudged ? overreach : 0f;
     }
 }

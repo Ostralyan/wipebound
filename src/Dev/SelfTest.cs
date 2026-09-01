@@ -50,6 +50,7 @@ public static class SelfTest
         ManifestIsCanonical();
         BossPacing();
         ClassChoice();
+        MovementUnderBurstyClaims();
         KitShape();
         Controls();
         Submission();
@@ -1166,6 +1167,79 @@ public static class SelfTest
         // Every class the picker can offer must actually build a kit.
         foreach (HeroClass hero in System.Enum.GetValues<HeroClass>())
             Check(PlayerKit.For(hero).Count > 0, $"{hero} has a kit to be chosen");
+    }
+
+    /// <summary>
+    /// An honest walker whose position claims arrive in BURSTS.
+    ///
+    /// The server validates every physics tick against the latest claim it holds,
+    /// so a delayed or dropped update means several ticks see no movement and then
+    /// one sees all of it. Distance and time are conserved here -- the walker never
+    /// exceeds its speed over any interval -- so anything billed is a false
+    /// positive.
+    /// </summary>
+    private static float WalkWithGaps(float gap, float speed, float seconds)
+    {
+        var validator = new MovementValidator { ArenaRadius = 100000f };
+        validator.Reset(Vector3.Zero);
+
+        const float tick = 1f / 60f;
+        var claim = Vector3.Zero;
+        float sinceClaim = 0f;
+        float billed = 0f;
+
+        for (int i = 0; i < (int)(seconds * 60); i++)
+        {
+            sinceClaim += tick;
+
+            if (sinceClaim >= gap)
+            {
+                // It really did walk for exactly that long, at exactly its speed.
+                claim += Vector3.Right * (speed * sinceClaim);
+                sinceClaim = 0f;
+            }
+
+            billed += validator.Accept(claim, speed, tick);
+        }
+
+        return billed;
+    }
+
+    private static void MovementUnderBurstyClaims()
+    {
+        const float speed = 7f;
+
+        // The supported envelope. BurstSeconds is 0.6s, which pays for gaps up to
+        // 0.75s -- comfortably past what 300ms of latency with 3% loss produces.
+        foreach (float gap in new[] { 0.05f, 0.1f, 0.25f, 0.5f, 0.7f })
+        {
+            float billed = WalkWithGaps(gap, speed, 60f);
+            Check(billed <= 0.01f,
+                  $"claims every {gap}s cost an honest walker nothing (billed {billed:0.0}m)");
+        }
+
+        // Past the envelope a player IS effectively jumping from the server's
+        // point of view, and being billed is correct. What must never happen
+        // again is being billed MORE THAN COULD POSSIBLY HAVE BEEN WALKED: the
+        // same unreached metres used to be re-judged every tick, so a one second
+        // gap cost 3394m against 420m of travel.
+        float walked = speed * 60f;
+        float overOneSecond = WalkWithGaps(1.0f, speed, 60f);
+        Check(overOneSecond < walked,
+              $"a broken connection is billed proportionately, not repeatedly " +
+              $"({overOneSecond:0.0}m billed against {walked:0}m walked)");
+
+        // And the thing this exists to catch is still caught. One claim, a
+        // hundred metres, no time passing.
+        var cheat = new MovementValidator { ArenaRadius = 100000f };
+        cheat.Reset(Vector3.Zero);
+        cheat.Accept(Vector3.Zero, speed, 1f / 60f);
+        float jumped = cheat.Accept(new Vector3(100f, 0f, 0f), speed, 1f / 60f);
+        Check(jumped > 90f, $"a hundred metre jump in one claim is still billed for it (billed {jumped:0.0}m)");
+
+        // Repeated, it keeps costing -- a cheat cannot be laundered by waiting.
+        float second = cheat.Accept(new Vector3(200f, 0f, 0f), speed, 1f / 60f);
+        Check(second > 90f, $"and again the next time (billed {second:0.0}m)");
     }
 
     // -- the shape of a kit ----------------------------------------------

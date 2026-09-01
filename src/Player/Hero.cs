@@ -603,7 +603,10 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// Measured at 80ms round trip: three honest bots were billed 219cm of
     /// overreach against a 200cm ranked limit, and 0cm with this term present.
     /// </summary>
-    private static double RoundTrip() => NetClock.Instance?.WorstPeerRtt ?? 0.0;
+    /// Per-peer, exactly as SpeedChangeGrace measures it. Using the worst peer's
+    /// round trip for one hero's acknowledgement was more generous than needed and
+    /// meant two different numbers for one idea.
+    private double RoundTrip() => NetClock.Instance?.RttFor(PeerId) ?? 0.0;
 
     private double SpeedChangeGrace()
     {
