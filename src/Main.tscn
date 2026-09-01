@@ -242,4 +242,4 @@ autowrap_mode = 3
 
 [node name="Help" type="Label" parent="UI/Lobby/Margin/Rows"]
 modulate = Color(1, 1, 1, 0.6)
-text = "Right-click: move\nQ W E R: abilities\nWASD / middle-drag: pan\nWheel: zoom    Space: recenter"
+text = "Right-click: move\nQ W E R: abilities\nArrows / middle-drag: pan\nWheel: zoom    Space: recenter"

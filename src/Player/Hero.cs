@@ -127,8 +127,8 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     // Server-only. Never replicated, never accepted from a client. These are the
     // real cooldowns; the client's copies below are display state.
-    private double[] _serverReadyAt = System.Array.Empty<double>();
-    private double[] _clientReadyAt = System.Array.Empty<double>();
+    private readonly CooldownSet _serverCooldowns = new();
+    private readonly CooldownSet _clientCooldowns = new();
 
     /// While the server itself is moving this hero -- a knockback, a respawn --
     /// the client's reported position legitimately disagrees with the server's.
@@ -159,8 +159,8 @@ public partial class Hero : CharacterBody3D, ICombatant
         AddToGroup(Combatants.GroupName);
 
         if (Kit.Count == 0) Kit = PlayerKit.Build();
-        _serverReadyAt = new double[Kit.Count];
-        _clientReadyAt = new double[Kit.Count];
+        _serverCooldowns.Resize(Kit.Count);
+        _clientCooldowns.Resize(Kit.Count);
 
         _agent = GetNode<NavigationAgent3D>("NavAgent");
         _label = GetNode<Label3D>("NameLabel");
@@ -261,8 +261,28 @@ public partial class Hero : CharacterBody3D, ICombatant
         _health.Fill();
         _mana.Fill();
         _status.Clear();
+        ClearCooldowns();
         ServerTeleport(SpawnPoint);
         GD.Print($"[combat] {CombatName} revived");
+    }
+
+    /// <summary>
+    /// Cooldowns do NOT survive a wipe.
+    ///
+    /// A fight you learn by repetition is only learnable if every attempt starts
+    /// from the same state, and the reset delay is shorter than the longest
+    /// cooldown -- so leaving them running meant every single retry deterministically
+    /// began without the raid's biggest ability. That is not a cost, it is noise.
+    /// The boss clears its own cooldowns on reset for exactly the same reason;
+    /// leaving the players' running was an asymmetry with no argument behind it.
+    /// </summary>
+    private void ClearCooldowns()
+    {
+        _serverCooldowns.Clear();
+
+        // The client's copy is display state and will not clear itself.
+        for (int slot = 0; slot < Kit.Count; slot++)
+            AcknowledgeCast(slot, 0.0);
     }
 
     // ---------------------------------------------------------------------
@@ -510,26 +530,19 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     public Ability AbilityAt(int slot) => slot >= 0 && slot < Kit.Count ? Kit[slot] : null;
 
-    public bool IsAbilityReady(int slot, double now)
-        => slot >= 0 && slot < _serverReadyAt.Length && now >= _serverReadyAt[slot];
+    public bool IsAbilityReady(int slot, double now) => _serverCooldowns.IsReady(slot, now);
 
-    public double AbilityReadyAt(int slot)
-        => slot >= 0 && slot < _serverReadyAt.Length ? _serverReadyAt[slot] : 0.0;
+    public double AbilityReadyAt(int slot) => _serverCooldowns.ReadyAt(slot);
 
     public void StartCooldown(int slot, double now)
     {
-        if (slot < 0 || slot >= _serverReadyAt.Length) return;
-        _serverReadyAt[slot] = now + Kit[slot].Cooldown;
+        Ability ability = AbilityAt(slot);
+        if (ability is not null) _serverCooldowns.Start(slot, now, ability.Cooldown);
     }
 
-    /// <summary>How much of the cooldown is left, 0 to 1, for the local player's HUD.</summary>
+    /// <summary>How much of the cooldown is left, 1 to 0, for the local player's HUD.</summary>
     public float CooldownFraction(int slot, double now)
-    {
-        Ability ability = AbilityAt(slot);
-        if (ability is null || ability.Cooldown <= 0f) return 0f;
-        if (slot >= _clientReadyAt.Length) return 0f;
-        return Mathf.Clamp((float)((_clientReadyAt[slot] - now) / ability.Cooldown), 0f, 1f);
-    }
+        => _clientCooldowns.Fraction(slot, now, AbilityAt(slot)?.Cooldown ?? 0f);
 
     /// <summary>Server: tell the owner what its cooldown really is. Zero clears one.</summary>
     public void AcknowledgeCast(int slot, double readyAt)
@@ -541,8 +554,8 @@ public partial class Hero : CharacterBody3D, ICombatant
     [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
     private void OnCastAcknowledged(int slot, double readyAt)
     {
-        if (!IsLocalPlayer || slot < 0 || slot >= _clientReadyAt.Length) return;
-        _clientReadyAt[slot] = readyAt;
+        if (!IsLocalPlayer) return;
+        _clientCooldowns.SetReadyAt(slot, readyAt);
     }
 
     private void RequestAbility(int slot, Vector3 aimPoint)
@@ -552,7 +565,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         // Optimistic, so the button responds on the frame you pressed it. The
         // server's acknowledgement either confirms this or clears it.
-        if (slot < _clientReadyAt.Length) _clientReadyAt[slot] = Now + ability.Cooldown;
+        _clientCooldowns.Start(slot, Now, ability.Cooldown);
 
         CommandRouter.Send(ClientCommandType.CastAbility, new Godot.Collections.Dictionary
         {

@@ -32,9 +32,11 @@ godot -- --host --port 7788           # any of the above, on another port
 | --- | --- |
 | Right-click | Move your hero there |
 | `Q` `W` `E` `R` | Abilities: Strike, Lance, Aegis, Rupture |
-| `WASD` / arrows / middle-drag | Pan the camera |
+| Arrow keys / middle-drag | Pan the camera |
 | Mouse wheel | Zoom |
 | `Space` | Re-lock the camera to your hero |
+
+Panning is deliberately not on WASD: `W` is the slot 2 ability.
 
 Edge scrolling is off by default -- with two windows on one monitor it fires
 constantly. Turn it on in the `RtsCamera` inspector when you play fullscreen.

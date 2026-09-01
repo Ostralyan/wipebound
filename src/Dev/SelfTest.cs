@@ -32,6 +32,7 @@ public static class SelfTest
         MovementBudget();
         StatusEncoding();
         Resources();
+        Cooldowns();
         CommandPayloads();
         SpawnAllocation();
 
@@ -213,6 +214,51 @@ public static class SelfTest
         Near(regen.Current, 10f, "regen adds per second");
         regen.Tick(100f);
         Near(regen.Current, 100f, "regen ceilings at max");
+    }
+
+    // -- cooldowns -------------------------------------------------------
+
+    private static void Cooldowns()
+    {
+        var set = new CooldownSet();
+        set.Resize(4);
+        Check(set.Count == 4, "cooldown set sizes to the kit");
+        Check(set.IsReady(0, 100.0), "a fresh slot is ready");
+
+        set.Start(0, 100.0, 5f);
+        Check(!set.IsReady(0, 100.0), "starting a cooldown blocks the slot");
+        Check(!set.IsReady(0, 104.9), "the slot stays blocked until it elapses");
+        Check(set.IsReady(0, 105.0), "the slot frees exactly on time");
+        Check(set.IsReady(1, 100.0), "other slots are unaffected");
+
+        Near(set.Fraction(0, 100.0, 5f), 1f, "fraction is full at the start");
+        Near(set.Fraction(0, 102.5, 5f), 0.5f, "fraction is half way through");
+        Near(set.Fraction(0, 105.0, 5f), 0f, "fraction empties on expiry");
+        Near(set.Fraction(0, 200.0, 5f), 0f, "fraction never goes negative");
+
+        // Slot indices originate in client payloads, so out-of-range must be inert
+        // rather than an exception inside an RPC handler.
+        Check(!set.IsReady(-1, 100.0), "negative slot is never ready");
+        Check(!set.IsReady(99, 100.0), "out-of-range slot is never ready");
+        set.Start(-1, 100.0, 5f);
+        set.Start(99, 100.0, 5f);
+        set.SetReadyAt(-5, 999.0);
+        Near(set.Fraction(-1, 100.0, 5f), 0f, "out-of-range access is inert");
+
+        // A wipe must hand every attempt the same starting state.
+        set.Start(0, 100.0, 20f);
+        set.Start(3, 100.0, 20f);
+        set.Clear();
+        Check(set.IsReady(0, 100.0), "clearing frees a long cooldown");
+        Check(set.IsReady(3, 100.0), "clearing frees every slot");
+
+        // The reset delay is shorter than the longest ability cooldown, which is
+        // exactly why cooldowns cannot be allowed to survive a wipe.
+        float longest = 0f;
+        foreach (Ability ability in PlayerKit.Build())
+            longest = Mathf.Max(longest, ability.Cooldown);
+        Check(longest > new Boss().ResetSeconds,
+              $"longest cooldown ({longest}s) exceeds the reset delay, so clearing them matters");
     }
 
     // -- command payloads ------------------------------------------------
