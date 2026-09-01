@@ -4,7 +4,8 @@ use axum::{
     Json,
 };
 use diesel::prelude::*;
-use diesel_async::RunQueryDsl;
+use diesel_async::{AsyncConnection, RunQueryDsl};
+use scoped_futures::ScopedFutureExt;
 use serde_json::{json, Value};
 
 use crate::{
@@ -27,7 +28,11 @@ pub async fn submit(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     domain::check(&submission).map_err(|rejection| AppError::Invalid(rejection.to_string()))?;
 
-    let verdict = domain::rank(&submission, &state.config.ranked_content_hashes);
+    let verdict = domain::rank(
+        &submission,
+        &state.config.ranked_content_hashes,
+        state.config.ranked_max_overreach_cm,
+    );
 
     let game_server = headers
         .get("x-server-id")
@@ -64,24 +69,38 @@ pub async fn submit(
 
     let mut conn = state.pool.get().await?;
 
-    // The run id comes from the game server precisely so a retry after a network
-    // failure is harmless. Do-nothing rather than upsert: a run already recorded
-    // is settled, and a second copy of it should not be able to change the first.
-    let inserted = diesel::insert_into(runs::table)
-        .values(&run)
-        .on_conflict(runs::id)
-        .do_nothing()
-        .execute(&mut conn)
-        .await?;
+    // One transaction. The run id comes from the game server precisely so a retry
+    // after a network failure is harmless -- but inserting the run and its players
+    // separately meant a failure between them left a permanent headless run, since
+    // the retry saw the run already present and skipped the players. Atomic or not
+    // at all.
+    let inserted = conn
+        .transaction::<i64, diesel::result::Error, _>(|conn| {
+            let run = &run;
+            let lines = &lines;
 
-    if inserted > 0 {
-        diesel::insert_into(run_players::table)
-            .values(&lines)
-            .on_conflict((run_players::run_id, run_players::peer))
-            .do_nothing()
-            .execute(&mut conn)
-            .await?;
-    }
+            async move {
+                // Do-nothing rather than upsert: a run already recorded is settled,
+                // and a second copy must not be able to change the first.
+                let inserted = diesel::insert_into(runs::table)
+                    .values(run)
+                    .on_conflict(runs::id)
+                    .do_nothing()
+                    .execute(conn)
+                    .await?;
+
+                if inserted > 0 {
+                    diesel::insert_into(run_players::table)
+                        .values(lines)
+                        .execute(conn)
+                        .await?;
+                }
+
+                Ok(inserted as i64)
+            }
+            .scope_boxed()
+        })
+        .await?;
 
     tracing::info!(
         run = %submission.run_id,

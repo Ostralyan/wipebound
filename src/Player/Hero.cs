@@ -27,6 +27,17 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// Nothing legitimate is ever outside this, so claims beyond it are clamped.
     public const float ArenaRadius = 46f;
 
+    /// <summary>
+    /// How long the validator keeps billing at the OLD speed after a slow lands.
+    ///
+    /// Statuses are applied on the server and replicate afterwards, so for one
+    /// interval the server believes the hero is slowed while the client is still
+    /// legitimately running at full speed. Charging that gap made every Sunder cost
+    /// an honest player metres of overreach. Comfortably longer than the status
+    /// synchronizer's interval plus a round trip.
+    /// </summary>
+    public const double SpeedChangeGraceSeconds = 0.4;
+
     [ExportGroup("Movement")]
     [Export] public float MoveSpeed = 7.0f;
     [Export] public float TurnSpeed = 14.0f;
@@ -52,6 +63,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     private readonly ResourcePool _mana = new(100f);
     private readonly StatusTracker _status = new();
     private readonly Contribution _contribution = new();
+    private readonly MovementValidator _movement = new() { ArenaRadius = ArenaRadius };
 
     [Export] public float Health { get => _health.Current; set => _health.Current = value; }
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
@@ -125,7 +137,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// NetPosition a client reported -- otherwise a modified client could claim to
     /// be outside every telegraph, or in melee range from across the arena.
     /// </summary>
-    public Vector3 ServerPosition { get; private set; }
+    public Vector3 ServerPosition => _movement.Validated;
 
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
@@ -148,6 +160,10 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// the client's reported position legitimately disagrees with the server's.
     /// The speed clamp stands down until this passes rather than fighting it.
     private double _clampGraceUntil;
+
+    // Speed used for billing, which lags a slowdown by the replication window.
+    private float _billingSpeed = -1f;
+    private double _billingHoldUntil;
 
     // Client-side knockback slide.
     private Vector3 _pushFrom;
@@ -185,7 +201,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         // synchronizer, so it is correct on every peer before anything moves.
         GlobalPosition = SpawnPoint;
         NetPosition = SpawnPoint;
-        ServerPosition = SpawnPoint;
+        _movement.Reset(SpawnPoint);
         _moveTarget = SpawnPoint;
 
         _body.MaterialOverride = new StandardMaterial3D
@@ -315,7 +331,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (!IsServer) return;
 
-        ServerPosition = destination;
+        _movement.Reset(destination);
         _clampGraceUntil = Now + 1.0;
         RpcId(PeerId, MethodName.SnapTo, destination);
     }
@@ -324,7 +340,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (!IsServer || !IsAlive) return;
 
-        ServerPosition = destination;
+        _movement.Reset(destination);
 
         // The client slides over travelSeconds, so its reported position trails the
         // server's for that long. Suspend the clamp rather than have it read a
@@ -478,20 +494,44 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (Now < _clampGraceUntil)
         {
-            // The server put the hero here itself, so its own destination is the
-            // truth and the client's report legitimately trails it. Hold, rather
-            // than adopting whatever the client currently claims -- adopting it
-            // would hand a cheater a free window every time a mechanic moved them.
+            // The server moved this hero itself -- a respawn, a knockback -- so
+            // reconciling is not cheating and must not be billed. Follow rather
+            // than freeze: standing still here while the client legitimately walked
+            // meant the whole gap was charged the moment the window closed.
+            _movement.Follow(NetPosition, BillingSpeed(Now), dt);
             return;
         }
 
         // MoveSync is an untrusted input channel exactly like CommandRouter, and is
         // validated with the same discipline: garbage rejected, arena bounds
-        // enforced, and a per-tick budget with no additive slack.
-        ServerPosition = Untrusted.AdvanceValidatedPosition(
-            ServerPosition, NetPosition, EffectiveMoveSpeed, dt, ArenaRadius, out float overreach);
-
+        // enforced, and travel billed against an allowance that accrues with time
+        // rather than against a single physics tick.
+        float overreach = _movement.Accept(NetPosition, BillingSpeed(Now), dt);
         if (overreach > 0f) Overreach += overreach;
+    }
+
+    /// <summary>
+    /// The speed a claim is billed against. Speeding up takes effect at once --
+    /// the server learns of a haste before the client does, so there is no gap to
+    /// cover. Slowing down waits, because the client cannot yet know.
+    /// </summary>
+    private float BillingSpeed(double now)
+    {
+        float current = EffectiveMoveSpeed;
+
+        if (_billingSpeed < 0f || current >= _billingSpeed - 0.001f)
+        {
+            _billingSpeed = current;
+            _billingHoldUntil = 0.0;
+            return current;
+        }
+
+        if (_billingHoldUntil <= 0.0) _billingHoldUntil = now + SpeedChangeGraceSeconds;
+        if (now < _billingHoldUntil) return _billingSpeed;
+
+        _billingSpeed = current;
+        _billingHoldUntil = 0.0;
+        return current;
     }
 
     private void UpdateAppearance()

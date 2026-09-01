@@ -1567,6 +1567,7 @@ dependencies = [
  "diesel-async",
  "dotenvy",
  "futures-util",
+ "scoped-futures",
  "serde",
  "serde_json",
  "thiserror",

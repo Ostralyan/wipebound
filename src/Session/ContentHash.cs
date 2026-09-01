@@ -1,60 +1,122 @@
+using System.Collections.Generic;
 using System.Text;
+using Godot;
 using Wipebound.Combat;
 
 namespace Wipebound.Session;
 
 /// <summary>
-/// A stable fingerprint of the balance data a run was played against.
+/// A fingerprint of the balance data a run was played against.
 ///
-/// A four minute clear on a boss with 4000 health is not the same achievement as
-/// one on a boss with 400, so a ladder that mixes them is measuring nothing. The
-/// hash goes in the run record and the backend refuses runs whose content it does
-/// not recognise.
+/// A four minute clear against a boss with 4000 health is not the achievement a
+/// 400 health boss gives you, so a ladder that mixes them measures nothing. The
+/// hash travels with the run record and the backend only ranks values it knows.
 ///
-/// Deliberately covers the numbers that change difficulty and nothing else -- not
-/// colours, not display names -- so a cosmetic edit does not invalidate a season.
+/// It walks EXPORTED PROPERTIES rather than a hand-written list of fields, and
+/// that is the point. An earlier version hashed the number of effects on an
+/// ability, so damage values, applied statuses, hazard durations, summon counts
+/// and targeting rules could all change without changing the fingerprint. A
+/// generic walk cannot rot that way: a new effect with new numbers is covered the
+/// day it is written, by nobody remembering anything.
 /// </summary>
 public static class ContentHash
 {
+    private const int MaxDepth = 6;
+
+    /// Properties every Resource carries that say nothing about balance.
+    private static readonly HashSet<string> Ignored = new()
+    {
+        "script", "resource_path", "resource_name", "resource_local_to_scene", "Resource",
+    };
+
     public static string Current { get; } = Compute();
 
     private static string Compute()
     {
         var builder = new StringBuilder();
 
-        foreach (BossPhase phase in DefaultEncounter.Build())
-        {
-            if (phase is null) continue;
-            builder.Append(phase.EntersAtHealthPercent).Append(';').Append(phase.RecoverySeconds).Append(';');
+        foreach (BossPhase phase in DefaultEncounter.Build()) Append(builder, phase, 0);
+        foreach (Ability ability in PlayerKit.Build()) Append(builder, ability, 0);
+        Append(builder, MinionKit.Claw(), 0);
 
-            foreach (Ability ability in phase.Abilities) Append(builder, ability);
-        }
-
-        foreach (Ability ability in PlayerKit.Build()) Append(builder, ability);
+        // Statuses are balance too: a vulnerability multiplier or a shield size
+        // changes a fight as surely as a damage number does.
+        foreach (StatusEffect status in StatusLibrary.All) Append(builder, status, 0);
 
         return Fnv1a(builder.ToString());
     }
 
-    private static void Append(StringBuilder builder, Ability ability)
+    private static void Append(StringBuilder builder, Variant value, int depth)
     {
-        if (ability is null) return;
+        if (depth > MaxDepth)
+        {
+            builder.Append("...");
+            return;
+        }
 
-        builder.Append(ability.Id).Append(':')
-               .Append((int)ability.Shape).Append(':')
-               .Append((int)ability.Origin).Append(':')
-               .Append(ability.Radius).Append(':')
-               .Append(ability.InnerRadius).Append(':')
-               .Append(ability.ConeAngleDegrees).Append(':')
-               .Append(ability.RectHalfWidth).Append(':')
-               .Append(ability.CastSeconds).Append(':')
-               .Append(ability.Cooldown).Append(':')
-               .Append(ability.ManaCost).Append(':')
-               .Append(ability.Range).Append(':')
-               .Append(ability.Effects.Count).Append('|');
+        switch (value.VariantType)
+        {
+            case Variant.Type.Nil:
+                builder.Append("nil");
+                return;
+
+            case Variant.Type.Object:
+                Append(builder, value.AsGodotObject() as Resource, depth);
+                return;
+
+            case Variant.Type.Array:
+                builder.Append('[');
+                foreach (Variant item in value.AsGodotArray()) { Append(builder, item, depth + 1); builder.Append(','); }
+                builder.Append(']');
+                return;
+
+            case Variant.Type.Dictionary:
+                builder.Append('{');
+                foreach (var pair in value.AsGodotDictionary())
+                {
+                    Append(builder, pair.Key, depth + 1);
+                    builder.Append(':');
+                    Append(builder, pair.Value, depth + 1);
+                    builder.Append(',');
+                }
+                builder.Append('}');
+                return;
+
+            default:
+                builder.Append(value.ToString());
+                return;
+        }
     }
 
-    /// FNV-1a: short, stable across runs and platforms, and not a security boundary
-    /// -- nobody gains anything by colliding it, the backend allow-lists known values.
+    private static void Append(StringBuilder builder, Resource resource, int depth)
+    {
+        if (resource is null)
+        {
+            builder.Append("null");
+            return;
+        }
+
+        builder.Append(resource.GetType().Name).Append('(');
+
+        foreach (Godot.Collections.Dictionary property in resource.GetPropertyList())
+        {
+            var usage = (PropertyUsageFlags)(long)property["usage"];
+            if (!usage.HasFlag(PropertyUsageFlags.Storage)) continue;
+
+            string name = property["name"].AsString();
+            if (Ignored.Contains(name)) continue;
+
+            builder.Append(name).Append('=');
+            Append(builder, resource.Get(name), depth + 1);
+            builder.Append(';');
+        }
+
+        builder.Append(')');
+    }
+
+    /// FNV-1a: short, stable across runs and platforms, and not a security
+    /// boundary -- nobody gains anything by colliding it, since the backend only
+    /// ranks values it has been told about.
     private static string Fnv1a(string text)
     {
         const ulong offset = 14695981039346656037;

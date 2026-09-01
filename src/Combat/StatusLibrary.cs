@@ -98,6 +98,10 @@ public static class StatusLibrary
             Id = Hunted, DisplayName = "Hunted", Duration = 5f,
             Beneficial = false, Tint = new Color("fbbf24"),
             Dispellable = false,
+
+            // Per hunter, so two adds chasing one player hold separate marks and
+            // one losing interest does not clear the other's.
+            Scope = StatusScope.PerSource,
         });
     }
 
@@ -118,6 +122,9 @@ public static class StatusLibrary
     }
 
     public static void Register(StatusEffect definition) => ById[definition.Id] = definition;
+
+    /// Every registered status, so the content fingerprint can cover them.
+    public static System.Collections.Generic.IEnumerable<StatusEffect> All => ById.Values;
 
     public static StatusEffect Get(string id)
         => id is not null && ById.TryGetValue(id, out StatusEffect definition) ? definition : null;

@@ -132,6 +132,13 @@ public sealed class StatusTracker
         if (_active.RemoveAll(status => status.Definition.Id == id) > 0) Rebuild();
     }
 
+    /// <summary>Remove only the instance one particular caster applied.</summary>
+    public void Remove(string id, int sourceId)
+    {
+        int removed = _active.RemoveAll(status => status.Definition.Id == id && status.SourceId == sourceId);
+        if (removed > 0) Rebuild();
+    }
+
     public void Clear()
     {
         if (_active.Count == 0) return;

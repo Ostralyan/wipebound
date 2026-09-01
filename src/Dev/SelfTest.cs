@@ -115,54 +115,68 @@ public static class SelfTest
 
         // The exploit this exists to stop: one NaN claim used to poison the
         // server's validated position permanently.
-        Vector3 validated = new(5f, 0f, 5f);
-        Vector3 poisoned = Untrusted.AdvanceValidatedPosition(
-            validated, new Vector3(float.NaN, 0f, 0f), 7f, 1f / 60f, 44f);
-        Check(Untrusted.IsFinite(poisoned), "a NaN claim cannot poison the validated position");
-        Near(poisoned.X, 5f, "a NaN claim is ignored outright");
+        var poisoned = new MovementValidator();
+        poisoned.Reset(new Vector3(5f, 0f, 5f));
+        float charged = poisoned.Accept(new Vector3(float.NaN, 0f, 0f), 7f, 1f / 60f);
+        Check(Untrusted.IsFinite(poisoned.Validated), "a NaN claim cannot poison the validated position");
+        Near(poisoned.Validated.X, 5f, "a NaN claim moves nothing");
+        Near(charged, MovementValidator.GarbageClaimPenalty, "a non-finite claim is charged heavily");
 
-        // Honest movement leaves no trail; a ladder needs that to be true or the
-        // measurement is worthless.
-        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(0.05f, 0f, 0f),
-                                           7f, 1f / 60f, 44f, out float honest);
-        Near(honest, 0f, "legitimate movement records no overreach");
-
-        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(50f, 0f, 0f),
-                                           7f, 1f / 60f, 44f, out float cheating);
-        Check(cheating > 40f, $"a teleport records the distance it overreached ({cheating:0.0}m)");
-
-        Untrusted.AdvanceValidatedPosition(Vector3.Zero, new Vector3(float.NaN, 0f, 0f),
-                                           7f, 1f / 60f, 44f, out float garbage);
-        Near(garbage, Untrusted.GarbageClaimPenalty, "a non-finite claim is charged heavily");
-
-        Vector3 farAway = Untrusted.AdvanceValidatedPosition(
-            Vector3.Zero, new Vector3(1e30f, 0f, 0f), 7f, 1f, 44f);
-        Check(farAway.Length() <= 44.01f, "claims outside the arena are clamped to it");
+        var wanderer = new MovementValidator { ArenaRadius = 44f };
+        wanderer.Reset(Vector3.Zero);
+        for (int tick = 0; tick < 600; tick++) wanderer.Accept(new Vector3(1e30f, 0f, 0f), 7f, 1f / 60f);
+        Check(wanderer.Validated.Length() <= 44.01f, "claims outside the arena are clamped to it");
     }
 
     private static void MovementBudget()
     {
-        // Simulate one second of a client claiming it is very far away, and measure
-        // how far the server actually let it travel.
         const float nominal = 7f;
         const float dt = 1f / 60f;
 
-        Vector3 validated = Vector3.Zero;
-        var claim = new Vector3(500f, 0f, 0f);
+        // THE CASE THAT SHIPPED BROKEN. Claims arrive at 20Hz while validation runs
+        // at 60Hz, so a claim carries about three frames of travel. Billing it
+        // against one frame charged an honest walker a hundred metres in thirteen
+        // seconds, and the ladder rejected any overreach at all.
+        var honest = new MovementValidator { ArenaRadius = 1000f };
+        honest.Reset(Vector3.Zero);
 
-        for (int tick = 0; tick < 60; tick++)
-            validated = Untrusted.AdvanceValidatedPosition(validated, claim, nominal, dt, 1000f);
+        var claim = Vector3.Zero;
+        float charged = 0f;
 
-        float travelled = validated.Length();
-        Check(travelled <= nominal * Untrusted.SpeedTolerance + 0.01f,
-              $"sustained speed stays within tolerance (travelled {travelled:0.00}m in 1s at a nominal {nominal})");
-        Check(travelled > nominal, "legitimate movement is not over-restricted");
+        for (int tick = 0; tick < 600; tick++)
+        {
+            // The client walks every frame but only publishes every third, and a
+            // claim reports where it HAS been rather than where it is about to be.
+            if (tick % 3 == 0) claim = new Vector3(nominal * dt * tick, 0f, 0f);
+            charged += honest.Accept(claim, nominal, dt);
+        }
 
-        // A hero standing still must not drift.
-        Vector3 still = new(3f, 0f, 3f);
-        for (int tick = 0; tick < 60; tick++)
-            still = Untrusted.AdvanceValidatedPosition(still, new Vector3(3f, 0f, 3f), nominal, dt, 44f);
-        Near(still.X, 3f, "a stationary claim does not drift");
+        Near(charged, 0f, "ten seconds of honest walking is charged nothing", 0.001f);
+        Check(honest.Validated.X > nominal * 9f, "and the honest walker actually got where it was going");
+
+        // Sustained speed is still impossible.
+        var speeding = new MovementValidator { ArenaRadius = 10_000f };
+        speeding.Reset(Vector3.Zero);
+        for (int tick = 0; tick < 60; tick++) speeding.Accept(new Vector3(5000f, 0f, 0f), nominal, dt);
+        float travelled = speeding.Validated.Length();
+        Check(travelled <= nominal * MovementValidator.SpeedTolerance + 0.01f,
+              $"one second of claiming to be far away travels at most the legal speed ({travelled:0.00}m)");
+
+        // Standing still cannot bank a teleport.
+        var patient = new MovementValidator { ArenaRadius = 10_000f };
+        patient.Reset(Vector3.Zero);
+        for (int tick = 0; tick < 600; tick++) patient.Accept(Vector3.Zero, nominal, dt);
+        float blink = patient.Accept(new Vector3(200f, 0f, 0f), nominal, dt);
+        float banked = patient.Validated.Length();
+        Check(banked <= nominal * MovementValidator.SpeedTolerance * MovementValidator.BurstSeconds + 0.01f,
+              $"ten idle seconds bank only a fraction of a second of travel ({banked:0.00}m)");
+        Check(blink > 190f, "and the rest of a teleport is charged");
+
+        // A stationary claim never drifts.
+        var still = new MovementValidator();
+        still.Reset(new Vector3(3f, 0f, 3f));
+        for (int tick = 0; tick < 60; tick++) still.Accept(new Vector3(3f, 0f, 3f), nominal, dt);
+        Near(still.Validated.X, 3f, "a stationary claim does not drift");
     }
 
     // -- statuses --------------------------------------------------------
@@ -320,12 +334,44 @@ public static class SelfTest
                   new Dictionary<int, float>()) is not null,
               "an unhit minion still picks somebody rather than standing idle");
 
-        // Decay is what stops attention becoming a job somebody can hold.
-        var fading = new Dictionary<int, float> { [1] = 100f };
-        TargetSelection.Decay(fading, TargetSelection.AttentionHalfLife);
-        Near(fading[1], 50f, "attention halves over one half-life", 0.5f);
-        for (int i = 0; i < 40; i++) TargetSelection.Decay(fading, 1f);
-        Check(!fading.ContainsKey(1), "attention eventually forgets entirely");
+        // Attention is a MEMORY, measured in time since you last hit it -- not
+        // merely a decaying number. Uniform decay never reorders anything, so a
+        // lone attacker used to stay the target for about thirty seconds while the
+        // comment promised four.
+        // Half a half-life of ageing, staying inside the memory window.
+        var table = new AttentionTable();
+        table.Record(1, 100f, 100.0);
+        table.Forget(102.0, TargetSelection.AttentionHalfLife * 0.5f);
+        Near(table.Scores[1], 70.7f, "a hit loses weight as it ages", 1f);
+
+        table.Forget(100.0 + TargetSelection.AttentionMemory + 0.1, 0.1f);
+        Check(table.Count == 0, "and is forgotten entirely once the memory window passes");
+
+        // Being hit again keeps you in mind.
+        var refreshed = new AttentionTable();
+        refreshed.Record(1, 100f, 100.0);
+        for (int i = 0; i < 20; i++)
+        {
+            double at = 100.0 + i * 0.5;
+            refreshed.Record(1, 1f, at);
+            refreshed.Forget(at, 0.5f);
+        }
+        Check(refreshed.Count == 1, "a repeat attacker stays in mind");
+
+        // A newer, smaller attacker can overtake an older, larger one -- which is
+        // the entire point of decaying rather than accumulating.
+        var contest = new AttentionTable();
+        contest.Record(1, 100f, 100.0);
+
+        for (int i = 0; i < 5; i++)
+        {
+            double at = 100.5 + i * 0.5;
+            contest.Record(2, 25f, at);
+            contest.Forget(at, 0.5f);
+        }
+
+        Check(contest.Scores[2] > contest.Scores[1],
+              $"steady pressure overtakes one big old hit ({contest.Scores[2]:0} vs {contest.Scores[1]:0})");
 
         // Fixate keeps its victim while they are available...
         ICombatant kept = TargetSelection.Choose(TargetRule.Fixate, everyone, Vector3.Zero, keeping: far);

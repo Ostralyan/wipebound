@@ -19,6 +19,7 @@ diesel-async = { version = "0.5", features = ["postgres", "deadpool"] }
 # async-await feature it needs; without it the build fails inside that crate on
 # a missing futures_util::try_join.
 futures-util = "0.3"
+scoped-futures = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 tracing = "0.1"

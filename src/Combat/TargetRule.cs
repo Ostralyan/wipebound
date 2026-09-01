@@ -34,9 +34,19 @@ public enum TargetRule
 /// </summary>
 public static class TargetSelection
 {
-    /// How quickly a minion forgets who hit it. Short on purpose: long enough to
-    /// stop it thrashing, far too short to accumulate into a role.
+    /// How quickly a recent hit loses weight against a newer one.
     public const float AttentionHalfLife = 4f;
+
+    /// <summary>
+    /// How long since your last hit before a minion forgets you entirely.
+    ///
+    /// Decay alone was not a memory. Scaling every score by the same factor never
+    /// changes their order, so a lone attacker stayed the target until their score
+    /// happened to fall under a cull threshold -- about thirty seconds, not the
+    /// four this claimed. Forgetting is now a function of TIME SINCE YOU LAST HIT
+    /// IT, which is what the word meant.
+    /// </summary>
+    public const float AttentionMemory = 4f;
 
     public static ICombatant Choose(
         TargetRule rule,
@@ -124,23 +134,60 @@ public static class TargetSelection
         return best;
     }
 
-    /// <summary>Exponential forgetting, framerate independent.</summary>
-    public static void Decay(Dictionary<int, float> attention, float delta)
+}
+
+/// <summary>
+/// Who has been hurting one NPC lately.
+///
+/// Local to a single minion and genuinely short-lived, which is the whole
+/// difference between attention and a threat table somebody can hold: there is no
+/// way to accumulate a claim on it, because not hitting it for four seconds
+/// removes you from it completely.
+/// </summary>
+public sealed class AttentionTable
+{
+    private readonly Dictionary<int, float> _score = new();
+    private readonly Dictionary<int, double> _lastHit = new();
+
+    public IReadOnlyDictionary<int, float> Scores => _score;
+    public int Count => _score.Count;
+
+    public void Record(int combatId, float amount, double now)
     {
-        if (attention.Count == 0) return;
+        if (amount <= 0f) return;
 
-        float factor = Mathf.Exp(-Mathf.Log(2f) * delta / AttentionHalfLife);
-        var spent = new List<int>();
+        _score[combatId] = _score.GetValueOrDefault(combatId) + amount;
+        _lastHit[combatId] = now;
+    }
 
-        foreach (int id in attention.Keys) spent.Add(id);
+    public void Clear()
+    {
+        _score.Clear();
+        _lastHit.Clear();
+    }
 
-        foreach (int id in spent)
+    /// <summary>
+    /// Age the table. Scores decay so a newer, smaller hit can overtake an older,
+    /// larger one; entries nobody has refreshed inside the memory window are
+    /// dropped outright.
+    /// </summary>
+    public void Forget(double now, float delta)
+    {
+        if (_score.Count == 0) return;
+
+        float factor = Mathf.Exp(-Mathf.Log(2f) * delta / TargetSelection.AttentionHalfLife);
+        var stale = new List<int>();
+
+        foreach (int id in _score.Keys)
         {
-            float value = attention[id] * factor;
+            if (now - _lastHit.GetValueOrDefault(id) >= TargetSelection.AttentionMemory) stale.Add(id);
+            else _score[id] *= factor;
+        }
 
-            // Drop the tail so the table cannot grow without bound over a long fight.
-            if (value < 0.5f) attention.Remove(id);
-            else attention[id] = value;
+        foreach (int id in stale)
+        {
+            _score.Remove(id);
+            _lastHit.Remove(id);
         }
     }
 }

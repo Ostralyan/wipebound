@@ -73,16 +73,25 @@ pub struct Verdict {
 
 impl Verdict {
     fn ranked() -> Self {
-        Self { rankable: true, reason: None }
+        Self {
+            rankable: true,
+            reason: None,
+        }
     }
 
     fn refused(reason: &'static str) -> Self {
-        Self { rankable: false, reason: Some(reason) }
+        Self {
+            rankable: false,
+            reason: Some(reason),
+        }
     }
 }
 
 fn is_hex32(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Structural checks. Anything that fails here is malformed or lying about
@@ -143,15 +152,22 @@ pub fn check(submission: &RunSubmission) -> Result<(), Rejection> {
 
 /// Whether a well-formed run counts. Order matters only for which reason is
 /// reported, and the order is chosen so the most fundamental problem wins.
-pub fn rank(submission: &RunSubmission, ranked_hashes: &[String]) -> Verdict {
+pub fn rank(
+    submission: &RunSubmission,
+    ranked_hashes: &[String],
+    max_overreach_cm: i64,
+) -> Verdict {
     if submission.authority != "dedicated" {
         // Whoever hosts is the authority and can forge every number above.
         return Verdict::refused("not played on a dedicated server");
     }
-    if !ranked_hashes.iter().any(|hash| hash == &submission.content_hash) {
+    if !ranked_hashes
+        .iter()
+        .any(|hash| hash == &submission.content_hash)
+    {
         return Verdict::refused("balance data is not part of the current season");
     }
-    if submission.worst_overreach_cm > 0 {
+    if submission.worst_overreach_cm > max_overreach_cm {
         return Verdict::refused("a client claimed positions it could not have reached");
     }
     if submission.outcome != "kill" {
@@ -190,11 +206,13 @@ mod tests {
         vec!["9cf1e05383cda8ec".to_string()]
     }
 
+    const ALLOWED_OVERREACH: i64 = 200;
+
     #[test]
     fn an_honest_clear_is_ranked() {
         let run = honest();
         assert_eq!(check(&run), Ok(()));
-        assert_eq!(rank(&run, &season()), Verdict::ranked());
+        assert_eq!(rank(&run, &season(), ALLOWED_OVERREACH), Verdict::ranked());
     }
 
     #[test]
@@ -202,14 +220,27 @@ mod tests {
         let mut run = honest();
         run.outcome = "wipe".into();
         assert_eq!(check(&run), Ok(()));
-        assert!(!rank(&run, &season()).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
     }
 
     #[test]
     fn a_player_hosted_run_can_never_rank() {
         let mut run = honest();
         run.authority = "player_hosted".into();
-        assert_eq!(rank(&run, &season()).reason, Some("not played on a dedicated server"));
+        assert_eq!(
+            rank(&run, &season(), ALLOWED_OVERREACH).reason,
+            Some("not played on a dedicated server")
+        );
+    }
+
+    #[test]
+    fn a_little_overreach_is_tolerated() {
+        // Honest play produces some: a slow takes an interval to replicate, and for
+        // that window the client is legitimately faster than the server believes.
+        let mut run = honest();
+        run.players[0].overreach_cm = 40;
+        run.worst_overreach_cm = 40;
+        assert!(rank(&run, &season(), ALLOWED_OVERREACH).rankable);
     }
 
     #[test]
@@ -218,14 +249,14 @@ mod tests {
         run.players[0].overreach_cm = 1_045_780;
         run.worst_overreach_cm = 1_045_780;
         assert_eq!(check(&run), Ok(()));
-        assert!(!rank(&run, &season()).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
     }
 
     #[test]
     fn a_run_from_another_balance_patch_does_not_pollute_the_ladder() {
         let mut run = honest();
         run.content_hash = "0000000000000000".into();
-        assert!(!rank(&run, &season()).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
     }
 
     #[test]

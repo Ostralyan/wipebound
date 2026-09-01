@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Arc::new(config::Config::from_env()?);
     let pool = db::build_pool(&config.database_url)?;
-    let state = AppState { pool, config: Arc::clone(&config) };
+    let state = AppState {
+        pool,
+        config: Arc::clone(&config),
+    };
 
     let public = Router::new()
         .route("/leaderboards/{boss}", get(routes::leaderboard::top))

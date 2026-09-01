@@ -10,6 +10,15 @@ pub struct Config {
 
     /// Balance fingerprints eligible for ranking this season.
     pub ranked_content_hashes: Vec<String>,
+
+    /// How much position overreach a run may carry and still be ranked.
+    ///
+    /// Not zero, and configurable rather than baked in. Honest play produces a
+    /// little: a status change takes an interval to replicate, and for that window
+    /// a client is legitimately moving at a speed the server has already stopped
+    /// believing in. Where the line sits is a decision for whoever runs the ladder,
+    /// not a constant in a validator.
+    pub ranked_max_overreach_cm: i64,
 }
 
 impl Config {
@@ -24,6 +33,10 @@ impl Config {
                 .map(|hash| hash.trim().to_string())
                 .filter(|hash| !hash.is_empty())
                 .collect(),
+            ranked_max_overreach_cm: std::env::var("RANKED_MAX_OVERREACH_CM")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(200),
         })
     }
 }

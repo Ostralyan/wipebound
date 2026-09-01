@@ -80,10 +80,8 @@ public partial class Minion : CharacterBody3D, ICombatant
     private double _fixateUntil;
     private double _markAt;
 
-    /// Recent damage by CombatId, for HighestRecentDamage. Local to this minion and
-    /// decaying, which is the whole difference between attention and a threat table
-    /// somebody can hold.
-    private readonly Dictionary<int, float> _attention = new();
+    /// Who has been hurting it lately, for HighestRecentDamage.
+    private readonly AttentionTable _attention = new();
 
     public override void _Ready()
     {
@@ -111,7 +109,7 @@ public partial class Minion : CharacterBody3D, ICombatant
 
         double now = Now;
         _status.Tick(this, now);
-        if (Targeting == TargetRule.HighestRecentDamage) TargetSelection.Decay(_attention, dt);
+        if (Targeting == TargetRule.HighestRecentDamage) _attention.Forget(now, dt);
 
         if (!IsAlive)
         {
@@ -166,12 +164,13 @@ public partial class Minion : CharacterBody3D, ICombatant
         List<ICombatant> prey = Combatants.Living(this, this, TargetFilter.Enemies);
         if (prey.Count == 0)
         {
+            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId);
             _fixation = null;
             return null;
         }
 
         if (Targeting != TargetRule.Fixate)
-            return TargetSelection.Choose(Targeting, prey, GlobalPosition, null, _attention);
+            return TargetSelection.Choose(Targeting, prey, GlobalPosition, null, _attention.Scores);
 
         // Lose interest on a timer, so being hunted is a moment rather than a role.
         ICombatant keeping = now >= _fixateUntil ? null : _fixation;
@@ -179,6 +178,11 @@ public partial class Minion : CharacterBody3D, ICombatant
 
         if (!ReferenceEquals(chosen, _fixation))
         {
+            // Release the previous victim explicitly. The marker used to linger for
+            // its whole duration after a rotation, which left other minions avoiding
+            // somebody nothing was chasing any more.
+            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId);
+
             _fixation = chosen;
             _fixateUntil = now + FixateSeconds;
             _markAt = 0.0;
@@ -205,8 +209,7 @@ public partial class Minion : CharacterBody3D, ICombatant
         _health.Drain(landed);
 
         // Remembered only by this minion, and only for a few seconds.
-        if (source is not null && landed > 0f)
-            _attention[source.CombatId] = _attention.GetValueOrDefault(source.CombatId) + landed;
+        if (source is not null) _attention.Record(source.CombatId, landed, Now);
 
         if (!IsAlive) GD.Print($"[combat] {CombatName} destroyed by {label}");
     }

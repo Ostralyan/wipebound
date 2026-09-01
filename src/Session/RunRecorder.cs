@@ -29,6 +29,16 @@ public partial class RunRecorder : Node
     /// what it does not understand instead of guessing.
     public const int SchemaVersion = 1;
 
+    /// <summary>
+    /// Snapshots of players who left before the attempt ended.
+    ///
+    /// The roster used to be read from whichever hero nodes still existed, and a
+    /// disconnect frees the node -- so leaving took your contribution out of the
+    /// record, and your overreach evidence with it. Quitting before the end was a
+    /// way to erase having cheated.
+    /// </summary>
+    private readonly Dictionary<int, Godot.Collections.Dictionary> _departed = new();
+
     private string _bossId;
     private string _runId;
     private double _startedAt;
@@ -40,6 +50,7 @@ public partial class RunRecorder : Node
     {
         if (!NetworkManager.Instance.IsServer || _inProgress) return;
 
+        _departed.Clear();
         _bossId = bossId;
         _runId = NewRunId();
         _startedAt = NetClock.Instance.ServerTime;
@@ -56,7 +67,7 @@ public partial class RunRecorder : Node
         // record. Found by running the whole stack: the backend correctly refused
         // the rosterless run this used to send, which is the right answer to the
         // wrong question being asked.
-        if (RosterSize() == 0)
+        if (RosterSize() == 0 && _departed.Count == 0)
         {
             GD.Print("[run] attempt abandoned: nobody was left in it");
             return;
@@ -82,6 +93,23 @@ public partial class RunRecorder : Node
     /// <summary>Hook for whatever ships the record onward.</summary>
     public System.Action<Godot.Collections.Dictionary> Submitted;
 
+    /// <summary>Called before a departing hero's node is freed, so it stays in the record.</summary>
+    public void CaptureDeparting(Hero hero)
+    {
+        if (!NetworkManager.Instance.IsServer || !_inProgress || hero is null) return;
+        _departed[hero.PeerId] = LineFor(hero, departed: true);
+    }
+
+    private static Godot.Collections.Dictionary LineFor(Hero hero, bool departed) => new()
+    {
+        ["peer"] = hero.PeerId,
+        ["damage_done"] = Mathf.RoundToInt(hero.DamageDone),
+        ["healing_done"] = Mathf.RoundToInt(hero.HealingDone),
+        ["damage_taken"] = Mathf.RoundToInt(hero.DamageTaken),
+        ["overreach_cm"] = Mathf.RoundToInt(hero.Overreach * 100f),
+        ["departed"] = departed,
+    };
+
     /// <summary>
     /// Generated here, not by the backend, so a submission can be retried after a
     /// network failure without posting the same run twice.
@@ -99,24 +127,19 @@ public partial class RunRecorder : Node
         double endedAt = NetClock.Instance.ServerTime;
         bool dedicated = NetworkManager.Instance.Mode == NetworkManager.NetMode.DedicatedServer;
 
+        // Everyone who took part, not merely everyone still connected.
+        var lines = new Dictionary<int, Godot.Collections.Dictionary>(_departed);
+
+        foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
+            if (node is Hero hero) lines[hero.PeerId] = LineFor(hero, departed: false);
+
         var players = new Godot.Collections.Array();
         int worstOverreachCm = 0;
 
-        foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
+        foreach (Godot.Collections.Dictionary line in lines.Values)
         {
-            if (node is not Hero hero) continue;
-
-            int overreachCm = Mathf.RoundToInt(hero.Overreach * 100f);
-            worstOverreachCm = Mathf.Max(worstOverreachCm, overreachCm);
-
-            players.Add(new Godot.Collections.Dictionary
-            {
-                ["peer"] = hero.PeerId,
-                ["damage_done"] = Mathf.RoundToInt(hero.DamageDone),
-                ["healing_done"] = Mathf.RoundToInt(hero.HealingDone),
-                ["damage_taken"] = Mathf.RoundToInt(hero.DamageTaken),
-                ["overreach_cm"] = overreachCm,
-            });
+            worstOverreachCm = Mathf.Max(worstOverreachCm, line["overreach_cm"].AsInt32());
+            players.Add(line);
         }
 
         // Integers throughout. A ladder sorts on these, and float ordering brings

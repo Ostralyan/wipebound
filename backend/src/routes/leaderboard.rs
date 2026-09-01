@@ -10,8 +10,9 @@ use crate::{error::AppError, models::RunRow, schema::runs, AppState};
 
 #[derive(Debug, Deserialize)]
 pub struct TopQuery {
-    /// Ladders are per balance patch. Omitting this mixes seasons, so it is
-    /// available but never the default anyone should reach for.
+    /// Ladders are per balance patch. Omitting it does NOT mix seasons -- it falls
+    /// back to every hash configured as ranked, because a ladder that quietly
+    /// compares runs from different balance numbers is worse than no ladder.
     pub content_hash: Option<String>,
     pub limit: Option<i64>,
 }
@@ -33,9 +34,12 @@ pub async fn top(
         .filter(runs::rankable.eq(true))
         .into_boxed();
 
-    if let Some(hash) = query.content_hash {
-        statement = statement.filter(runs::content_hash.eq(hash));
-    }
+    statement = match query.content_hash {
+        Some(hash) => statement.filter(runs::content_hash.eq(hash)),
+        None => {
+            statement.filter(runs::content_hash.eq_any(state.config.ranked_content_hashes.clone()))
+        }
+    };
 
     let rows = statement
         .select(RunRow::as_select())

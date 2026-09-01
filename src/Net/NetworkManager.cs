@@ -202,7 +202,14 @@ public partial class NetworkManager : Node
     {
         if (!IsServer || _heroContainer is null) return;
         _slotByPeer.Remove(peerId);
-        _heroContainer.GetNodeOrNull(peerId.ToString())?.QueueFree();
+
+        Node node = _heroContainer.GetNodeOrNull(peerId.ToString());
+        if (node is null) return;
+
+        // Snapshot before freeing, or leaving would erase both the contribution and
+        // the integrity evidence.
+        if (node is Player.Hero hero) Session.RunRecorder.Instance?.CaptureDeparting(hero);
+        node.QueueFree();
     }
 
     // ---------------------------------------------------------------------
