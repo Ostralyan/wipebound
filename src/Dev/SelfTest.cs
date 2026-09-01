@@ -50,6 +50,7 @@ public static class SelfTest
         ManifestIsCanonical();
         BossPacing();
         ClassChoice();
+        Identity();
         MovementUnderBurstyClaims();
         KitShape();
         Controls();
@@ -1240,6 +1241,82 @@ public static class SelfTest
         // Repeated, it keeps costing -- a cheat cannot be laundered by waiting.
         float second = cheat.Accept(new Vector3(200f, 0f, 0f), speed, 1f / 60f);
         Check(second > 90f, $"and again the next time (billed {second:0.0}m)");
+    }
+
+    /// <summary>
+    /// A player's name and id are untrusted strings that end up in a database, a
+    /// ladder, and the server's log.
+    /// </summary>
+    private static void Identity()
+    {
+        // THE ONE THAT MATTERS. Names are written into the resolve log, which is
+        // read line by line by people and by tools/latency-test.sh. A name
+        // carrying a newline could write its own log lines and claim anything
+        // happened in the fight.
+        string forged = PlayerIdentity.CleanName("alice\n[resolve] boss :: died");
+        Check(!forged.Contains('\n'), $"a newline cannot survive into a name (got '{forged}')");
+        Check(!forged.Contains('\r'), "nor a carriage return");
+
+        Check(PlayerIdentity.CleanName("bob\u0007\u0000") == "bob", "control characters are dropped");
+        Check(PlayerIdentity.CleanName("   spaced   ") == "spaced", "and the edges are trimmed");
+        Check(PlayerIdentity.CleanName("") == "Anonymous", "an empty name gets a real one");
+        Check(PlayerIdentity.CleanName("   ") == "Anonymous", "and so does a blank one");
+        Check(PlayerIdentity.CleanName(null) == "Anonymous", "and a missing one");
+
+        string long_ = PlayerIdentity.CleanName(new string('x', 200));
+        Check(long_.Length == PlayerIdentity.MaxNameLength,
+              $"a name is capped at {PlayerIdentity.MaxNameLength} (got {long_.Length})");
+
+        // Cleaning is not censoring: an ordinary name comes back untouched.
+        Check(PlayerIdentity.CleanName("Lukas") == "Lukas", "an ordinary name is left alone");
+
+        // Ids: wide enough for a platform's format, not a free-text field.
+        Check(PlayerIdentity.IsWellFormedId("a1b2c3d4e5f60718"), "a generated id is well formed");
+        Check(PlayerIdentity.IsWellFormedId("76561198000000000"), "and so is a platform-shaped one");
+        Check(!PlayerIdentity.IsWellFormedId("short"), "too short is refused");
+        Check(!PlayerIdentity.IsWellFormedId(new string('a', 65)), "too long is refused");
+        Check(!PlayerIdentity.IsWellFormedId("has spaces here"), "whitespace is refused");
+        Check(!PlayerIdentity.IsWellFormedId("semi;colon;value"), "punctuation is refused");
+        Check(!PlayerIdentity.IsWellFormedId(null), "and nothing at all is refused");
+
+        // THE BUG THIS PREVENTS. Two writers shared this file and only one of
+        // them read it before saving, so choosing a class erased the identity
+        // stored beside it -- every launch minted a new id, run records stayed
+        // perfectly well formed, and the ladder saw a different person each time.
+        const string Scratch = "selftest_prefs";
+        try
+        {
+            Session.UserPrefs.Write(Scratch, ("first", "kept"));
+            Session.UserPrefs.Write(Scratch, ("second", "added"));
+
+            Check(Session.UserPrefs.Read(Scratch, "first", "").AsString() == "kept",
+                  "an earlier setting survives a later, unrelated write");
+            Check(Session.UserPrefs.Read(Scratch, "second", "").AsString() == "added",
+                  "and the later one is there as well");
+        }
+        finally
+        {
+            Session.UserPrefs.Forget(Scratch);
+        }
+
+        Check(Session.UserPrefs.Read(Scratch, "first", "gone").AsString() == "gone",
+              "and a test leaves nothing behind in a real player's settings");
+
+        // This install has an identity, and it is stable within a session.
+        Check(PlayerIdentity.IsWellFormedId(PlayerIdentity.Id), "this install has a well formed id");
+        Check(PlayerIdentity.Id == PlayerIdentity.Id, "and it does not change when asked twice");
+
+        // WHO IS PLAYING must never reach the fingerprint that gates ranked play.
+        // PlayerName is exported so it can ride the spawn packet to nameplates,
+        // which is exactly what put it in front of the manifest walk -- and the
+        // fingerprint did move the moment it was added.
+        Check(!Session.ContentHash.Manifest().Contains("PlayerName"),
+              "a player's name is not part of the ranked content fingerprint");
+
+        // But an ability's name still is: excluding the string globally would
+        // have quietly taken every ability, status and hazard name out of it.
+        Check(Session.ContentHash.Manifest().Contains("DisplayName=Bulwark"),
+              "while an ability's name still is");
     }
 
     // -- the shape of a kit ----------------------------------------------

@@ -104,8 +104,26 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// </summary>
     public bool IsLocalPlayer => PeerId != 0 && PeerId == NetworkManager.Instance.LocalPeerId;
 
+    /// <summary>
+    /// Who this hero belongs to, and how much the server actually knows about
+    /// that. Set once by the server at spawn from the peer's declaration.
+    ///
+    /// PlayerId and IdentityProvider are server-side only: nothing on a client
+    /// needs them, and not replicating them is one fewer thing to spoof. The
+    /// name replicates because nameplates are the entire point of having one.
+    /// </summary>
+    public string PlayerId { get; set; } = string.Empty;
+
+    public string IdentityProvider { get; set; } = Session.PlayerIdentity.Anonymous;
+
+    [Export] public string PlayerName { get; set; } = string.Empty;
+
     // --- ICombatant ---
-    public string CombatName => $"hero {PeerId}";
+    //
+    // The name, not the peer id. A resolve log reading "alice at (7.1, 7.1) ->
+    // HIT" is something a person can check against what they remember doing;
+    // "hero 825107506" is not. Cleaned before it ever reaches here.
+    public string CombatName => string.IsNullOrEmpty(PlayerName) ? $"hero {PeerId}" : PlayerName;
     public int CombatId => PeerId;
     public Team Team => Team.Players;
     public bool IsAlive => !_health.IsEmpty;
@@ -626,8 +644,8 @@ public partial class Hero : CharacterBody3D, ICombatant
         // is shielded, slowed or carrying a bomb is what lets anyone react to it;
         // a buff bar only you can read helps only you.
         _label.Text = IsAlive
-            ? $"{PlayerKit.NameOf(Class)} {PeerId}\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}{StatusLine()}"
-            : $"{PeerId}\nDEAD";
+            ? $"{CombatName} ({PlayerKit.NameOf(Class)})\n{Mathf.RoundToInt(Health)}/{Mathf.RoundToInt(HealthMax)}{StatusLine()}"
+            : $"{CombatName}\nDEAD";
 
         _label.Modulate = !IsAlive ? new Color("64748b")
             : _health.Fraction > 0.35f ? Colors.White

@@ -102,7 +102,19 @@ public partial class RunRecorder : Node
 
     private static Godot.Collections.Dictionary LineFor(Hero hero, bool departed) => new()
     {
+        // Peer is kept because it is a true fact about the SESSION -- it is how
+        // this slot was addressed while the fight ran. It is no longer what
+        // identifies the person, because it was never capable of that: a fresh
+        // random integer every connection meant two runs by one player shared no
+        // key and the ladder could rank without ever attributing.
         ["peer"] = hero.PeerId,
+
+        // Provenance travels with the claim, exactly as authority does for the
+        // run. "anonymous" means the server accepted this without checking,
+        // because there is nothing yet to check it against.
+        ["player_id"] = hero.PlayerId,
+        ["display_name"] = hero.PlayerName,
+        ["identity"] = hero.IdentityProvider,
         ["damage_done"] = Mathf.RoundToInt(hero.DamageDone),
         ["healing_done"] = Mathf.RoundToInt(hero.HealingDone),
         ["damage_taken"] = Mathf.RoundToInt(hero.DamageTaken),

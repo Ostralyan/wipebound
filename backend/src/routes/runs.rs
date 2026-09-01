@@ -32,6 +32,7 @@ pub async fn submit(
         &submission,
         &state.config.ranked_content_hashes,
         state.config.ranked_max_overreach_cm,
+        state.config.ranked_require_verified_identity,
     );
 
     let game_server = headers
@@ -69,6 +70,9 @@ pub async fn submit(
             healing_done: player.healing_done,
             damage_taken: player.damage_taken,
             overreach_cm: player.overreach_cm,
+            player_id: player.player_id.clone(),
+            display_name: player.display_name.clone(),
+            identity: player.identity.clone(),
         })
         .collect();
 

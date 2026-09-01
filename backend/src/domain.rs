@@ -10,13 +10,52 @@ use sha2::{Digest, Sha256};
 pub const SUPPORTED_SCHEMA: i32 = 1;
 pub const MAX_PLAYERS: usize = 8;
 
+/// Accepted identity provenances. "steam" is listed before anything produces it
+/// so that the day one does, the schema, the digest and the ladder policy are
+/// already shaped for it and only the verifier is new.
+pub const IDENTITY_ANONYMOUS: &str = "anonymous";
+pub const IDENTITY_PROVENANCES: [&str; 2] = [IDENTITY_ANONYMOUS, "steam"];
+
+pub const MAX_NAME_LEN: usize = 24;
+pub const MIN_ID_LEN: usize = 8;
+pub const MAX_ID_LEN: usize = 64;
+
+/// Whether an id could have come from any provenance we accept. Wider than what
+/// the game currently generates, because a platform id is somebody else's format.
+pub fn well_formed_id(id: &str) -> bool {
+    (MIN_ID_LEN..=MAX_ID_LEN).contains(&id.len())
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A name fit to store and print back. Control characters are the point:
+/// these strings are rendered in ladders and written to logs.
+pub fn well_formed_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= MAX_NAME_LEN
+        && !name.chars().any(|c| c.is_control())
+}
+
 /// Six hours. Long enough that no honest attempt trips it, short enough that a
 /// nonsense value cannot sit at the top of a ladder sorted ascending.
 pub const MAX_DURATION_MS: i64 = 6 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PlayerLine {
+    /// How this slot was addressed during the fight. Unique within a run, and
+    /// meaningless outside it.
     pub peer: i64,
+
+    /// Who the slot belonged to. Opaque, and its trustworthiness is the
+    /// `identity` field's job to state rather than this one's to imply.
+    pub player_id: String,
+    pub display_name: String,
+
+    /// What the GAME SERVER verified about the id, never what the client
+    /// claimed about itself. "anonymous" is an honest admission that nothing was
+    /// checked; it identifies an install, not a person.
+    pub identity: String,
     pub damage_done: i64,
     pub healing_done: i64,
     pub damage_taken: i64,
@@ -88,6 +127,9 @@ pub fn digest(submission: &RunSubmission, game_server: &str) -> String {
 
     for player in &roster {
         number(&mut hasher, player.peer);
+        text(&mut hasher, &player.player_id);
+        text(&mut hasher, &player.display_name);
+        text(&mut hasher, &player.identity);
         number(&mut hasher, player.damage_done);
         number(&mut hasher, player.healing_done);
         number(&mut hasher, player.damage_taken);
@@ -116,6 +158,12 @@ pub enum Rejection {
     BadRoster,
     #[error("duplicate peer {0}")]
     DuplicatePeer(i64),
+    #[error("player id must be {MIN_ID_LEN}-{MAX_ID_LEN} characters of [A-Za-z0-9_-]")]
+    BadPlayerId,
+    #[error("display name must be 1-{MAX_NAME_LEN} characters and contain no control characters")]
+    BadDisplayName,
+    #[error("identity provenance must be one of {IDENTITY_PROVENANCES:?}")]
+    BadIdentity,
     #[error("negative quantity")]
     NegativeQuantity,
     #[error("worst_overreach_cm disagrees with the per-player figures")]
@@ -196,6 +244,16 @@ pub fn check(submission: &RunSubmission) -> Result<(), Rejection> {
             return Err(Rejection::DuplicatePeer(player.peer));
         }
         seen.push(player.peer);
+
+        if !well_formed_id(&player.player_id) {
+            return Err(Rejection::BadPlayerId);
+        }
+        if !well_formed_name(&player.display_name) {
+            return Err(Rejection::BadDisplayName);
+        }
+        if !IDENTITY_PROVENANCES.contains(&player.identity.as_str()) {
+            return Err(Rejection::BadIdentity);
+        }
         worst = worst.max(player.overreach_cm);
     }
 
@@ -215,6 +273,7 @@ pub fn rank(
     submission: &RunSubmission,
     ranked_hashes: &[String],
     max_overreach_cm: i64,
+    require_verified_identity: bool,
 ) -> Verdict {
     if submission.authority != "dedicated" {
         // Whoever hosts is the authority and can forge every number above.
@@ -229,6 +288,36 @@ pub fn rank(
     if submission.worst_overreach_cm > max_overreach_cm {
         return Verdict::refused("a client claimed positions it could not have reached");
     }
+    // Two slots claiming one VERIFIED identity is somebody playing themselves,
+    // and a ladder that ranked it would credit one person for two seats.
+    //
+    // Deliberately not checked for anonymous ids. An anonymous id is a claim
+    // nobody checked, so a collision between two of them establishes nothing --
+    // treating it as fraud would be reading meaning into a value that has none.
+    // Refusing it would also punish the honest case it cannot tell apart.
+    for (index, player) in submission.players.iter().enumerate() {
+        if player.identity == IDENTITY_ANONYMOUS {
+            continue;
+        }
+        if submission.players[..index].iter().any(|earlier| {
+            earlier.identity == player.identity && earlier.player_id == player.player_id
+        }) {
+            return Verdict::refused("one player occupied two places in the raid");
+        }
+    }
+
+    // Off by default, because switching it on today would empty the ladder: no
+    // verified provenance exists yet. It is the single line that changes when one
+    // does, which is the whole reason provenance is a stored field.
+    if require_verified_identity
+        && submission
+            .players
+            .iter()
+            .any(|player| player.identity == IDENTITY_ANONYMOUS)
+    {
+        return Verdict::refused("the ladder requires a verified identity");
+    }
+
     if submission.outcome != "kill" {
         return Verdict::refused("the boss survived");
     }
@@ -253,6 +342,9 @@ mod tests {
             worst_overreach_cm: 0,
             players: vec![PlayerLine {
                 peer: 817_129_303,
+                player_id: "a1b2c3d4e5f60718".into(),
+                display_name: "alice".into(),
+                identity: IDENTITY_ANONYMOUS.into(),
                 damage_done: 4210,
                 healing_done: 0,
                 damage_taken: 890,
@@ -323,6 +415,9 @@ mod tests {
         let mut two = honest();
         two.players.push(PlayerLine {
             peer: 5,
+            player_id: "f0e1d2c3b4a59687".into(),
+            display_name: "bob".into(),
+            identity: IDENTITY_ANONYMOUS.into(),
             damage_done: 7,
             healing_done: 0,
             damage_taken: 0,
@@ -342,7 +437,10 @@ mod tests {
     fn an_honest_clear_is_ranked() {
         let run = honest();
         assert_eq!(check(&run), Ok(()));
-        assert_eq!(rank(&run, &season(), ALLOWED_OVERREACH), Verdict::ranked());
+        assert_eq!(
+            rank(&run, &season(), ALLOWED_OVERREACH, false),
+            Verdict::ranked()
+        );
     }
 
     #[test]
@@ -350,7 +448,107 @@ mod tests {
         let mut run = honest();
         run.outcome = "wipe".into();
         assert_eq!(check(&run), Ok(()));
-        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH, false).rankable);
+    }
+
+    #[test]
+    fn identity_is_validated_like_every_other_untrusted_field() {
+        let mut short = honest();
+        short.players[0].player_id = "abc".into();
+        assert_eq!(check(&short), Err(Rejection::BadPlayerId));
+
+        let mut punctuated = honest();
+        punctuated.players[0].player_id = "not a valid id!!".into();
+        assert_eq!(check(&punctuated), Err(Rejection::BadPlayerId));
+
+        // The one that matters. These names are written to the game server's log,
+        // which is read line by line by people and by tools/latency-test.sh, so a
+        // name carrying a newline could forge log lines and claim anything.
+        let mut forged = honest();
+        forged.players[0].display_name = "alice\n[resolve] boss died".into();
+        assert_eq!(check(&forged), Err(Rejection::BadDisplayName));
+
+        let mut empty = honest();
+        empty.players[0].display_name = String::new();
+        assert_eq!(check(&empty), Err(Rejection::BadDisplayName));
+
+        let mut long = honest();
+        long.players[0].display_name = "x".repeat(MAX_NAME_LEN + 1);
+        assert_eq!(check(&long), Err(Rejection::BadDisplayName));
+
+        // Provenance is a closed set. A client inventing one would be inventing
+        // its own trustworthiness.
+        let mut invented = honest();
+        invented.players[0].identity = "verified-honestly".into();
+        assert_eq!(check(&invented), Err(Rejection::BadIdentity));
+
+        // A name of exactly the limit, and a plausible platform id, both pass.
+        let mut edge = honest();
+        edge.players[0].display_name = "x".repeat(MAX_NAME_LEN);
+        edge.players[0].player_id = "76561198000000000".into();
+        edge.players[0].identity = "steam".into();
+        assert_eq!(check(&edge), Ok(()));
+    }
+
+    #[test]
+    fn identity_is_part_of_what_makes_a_run_that_run() {
+        const SERVER: &str = "server-a";
+        let original = honest();
+
+        // Otherwise two different people's runs could collide as retries of each
+        // other, which is exactly what the digest exists to prevent.
+        let mut renamed = honest();
+        renamed.players[0].display_name = "mallory".into();
+        assert_ne!(digest(&original, SERVER), digest(&renamed, SERVER));
+
+        let mut reassigned = honest();
+        reassigned.players[0].player_id = "0000111122223333".into();
+        assert_ne!(digest(&original, SERVER), digest(&reassigned, SERVER));
+
+        let mut promoted = honest();
+        promoted.players[0].identity = "steam".into();
+        assert_ne!(digest(&original, SERVER), digest(&promoted, SERVER));
+    }
+
+    #[test]
+    fn one_person_may_not_occupy_two_seats_once_identity_is_verified() {
+        let mut twice = honest();
+        let mut clone = twice.players[0].clone();
+        clone.peer += 1;
+        twice.players.push(clone);
+        twice.worst_overreach_cm = 0;
+
+        // Anonymous is an install, not a person: three clients on one machine
+        // share one, which is how this project's own tests run.
+        assert!(rank(&twice, &season(), ALLOWED_OVERREACH, false).rankable);
+
+        for player in &mut twice.players {
+            player.identity = "steam".into();
+        }
+        assert_eq!(
+            rank(&twice, &season(), ALLOWED_OVERREACH, false).reason,
+            Some("one player occupied two places in the raid")
+        );
+    }
+
+    #[test]
+    fn requiring_verified_identity_is_one_flag_and_changes_nothing_else() {
+        let run = honest();
+
+        // Off, which it must be today: nothing produces a verified provenance,
+        // so switching it on would empty the ladder.
+        assert!(rank(&run, &season(), ALLOWED_OVERREACH, false).rankable);
+
+        assert_eq!(
+            rank(&run, &season(), ALLOWED_OVERREACH, true).reason,
+            Some("the ladder requires a verified identity")
+        );
+
+        // And the same run with a verified provenance passes the stricter policy,
+        // so the flag is the whole migration.
+        let mut verified = honest();
+        verified.players[0].identity = "steam".into();
+        assert!(rank(&verified, &season(), ALLOWED_OVERREACH, true).rankable);
     }
 
     #[test]
@@ -358,7 +556,7 @@ mod tests {
         let mut run = honest();
         run.authority = "player_hosted".into();
         assert_eq!(
-            rank(&run, &season(), ALLOWED_OVERREACH).reason,
+            rank(&run, &season(), ALLOWED_OVERREACH, false).reason,
             Some("not played on a dedicated server")
         );
     }
@@ -370,7 +568,7 @@ mod tests {
         let mut run = honest();
         run.players[0].overreach_cm = 40;
         run.worst_overreach_cm = 40;
-        assert!(rank(&run, &season(), ALLOWED_OVERREACH).rankable);
+        assert!(rank(&run, &season(), ALLOWED_OVERREACH, false).rankable);
     }
 
     #[test]
@@ -379,14 +577,14 @@ mod tests {
         run.players[0].overreach_cm = 1_045_780;
         run.worst_overreach_cm = 1_045_780;
         assert_eq!(check(&run), Ok(()));
-        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH, false).rankable);
     }
 
     #[test]
     fn a_run_from_another_balance_patch_does_not_pollute_the_ladder() {
         let mut run = honest();
         run.content_hash = "0000000000000000".into();
-        assert!(!rank(&run, &season(), ALLOWED_OVERREACH).rankable);
+        assert!(!rank(&run, &season(), ALLOWED_OVERREACH, false).rankable);
     }
 
     #[test]

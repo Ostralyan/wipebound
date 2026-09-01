@@ -33,7 +33,19 @@ CREATE TABLE runs (
 
 CREATE TABLE run_players (
     run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+
+    -- How this slot was ADDRESSED during the fight. Unique within a run and
+    -- meaningless outside it: a fresh random integer every connection.
     peer           BIGINT NOT NULL,
+
+    -- Who the slot belonged to, and how much the server actually knew about
+    -- that. 'anonymous' means the value was accepted unchecked, because there
+    -- was nothing to check it against; it identifies an install, not a person.
+    -- A verified provenance replaces the value here without moving the column.
+    player_id      TEXT NOT NULL,
+    display_name   TEXT NOT NULL,
+    identity       TEXT NOT NULL,
+
     damage_done    BIGINT NOT NULL,
     healing_done   BIGINT NOT NULL,
     damage_taken   BIGINT NOT NULL,
@@ -47,3 +59,7 @@ CREATE INDEX runs_ladder_idx
     WHERE rankable;
 
 CREATE INDEX runs_created_at_idx ON runs (created_at DESC);
+
+-- "Every run this player was in", which is the question the peer id could never
+-- answer.
+CREATE INDEX run_players_identity_idx ON run_players (identity, player_id);

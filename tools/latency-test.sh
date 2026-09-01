@@ -53,7 +53,7 @@ for i in $(seq 1 "$CLIENTS"); do
   docker run -d --name "wb-bot$i" --network $NET --cap-add=NET_ADMIN \
     -e LAG_MS="$LAG_MS" -e JITTER_MS="$JITTER_MS" -e LOSS_PCT="$LOSS_PCT" \
     -e FRAMES="$((FRAMES - 900))" \
-    wipebound-lag --join "$IP" --port 7777 --bot --class "$(((i - 1) % 3))" >/dev/null
+    wipebound-lag --join "$IP" --port 7777 --bot --name "bot$i" --class "$(((i - 1) % 3))" >/dev/null
 done
 
 echo "== running =="
@@ -91,7 +91,12 @@ OVERREACH=${OVERREACH:-missing}
 # Casts the server RESOLVED for a hero, which is the thing that has to survive
 # a bad network. Not damage dealt: a headless bot aims where its cursor is and
 # its cursor is not the boss, so it can play perfectly and still hit nothing.
-CASTS=$(grep -cE '^\[resolve\] hero' /tmp/lagtest/server.log || true)
+#
+# Matched on the bots' NAMES, which is why they are given one. This line used to
+# read "hero 825107506", and when heroes started being logged by player name
+# instead it would have silently counted zero for ever after -- the gate would
+# have kept passing while measuring nothing.
+CASTS=$(grep -cE '^\[resolve\] bot[0-9]+ ' /tmp/lagtest/server.log || true)
 CASTS=${CASTS:-0}
 RTT=$(grep -h '\[bot\] rtt' /tmp/lagtest/bot*.log | awk '{print $3}' | sort -u | tr '\n' ' ' || true)
 

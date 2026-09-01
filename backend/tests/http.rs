@@ -59,6 +59,7 @@ fn state() -> Option<AppState> {
         ranked_content_hashes: vec![HASH.into(), "hash-previous".into()],
         current_content_hash: HASH.into(),
         ranked_max_overreach_cm: 200,
+        ranked_require_verified_identity: false,
     };
 
     Some(AppState {
@@ -108,7 +109,10 @@ fn run(
         "authority": authority,
         "worst_overreach_cm": 0,
         "players": [{
-            "peer": 1, "damage_done": 100, "healing_done": 0,
+            "peer": 1,
+            "player_id": "a1b2c3d4e5f60718", "display_name": "alice",
+            "identity": "anonymous",
+            "damage_done": 100, "healing_done": 0,
             "damage_taken": 10, "overreach_cm": 0
         }],
     })
@@ -199,6 +203,47 @@ async fn an_honest_clear_is_stored_and_ranked() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["players"].as_array().unwrap().len(), 1);
     assert_eq!(body["players"][0]["damage_done"], 100);
+}
+
+#[tokio::test]
+async fn the_ladder_can_say_who_played() {
+    // The point of the whole exercise. A ladder keyed on ENet peer ids could rank
+    // a run and never attribute it: the id is a fresh random integer every
+    // connection, so two runs by one person shared no key and no row could be
+    // read back as "this person did this".
+    let app = require_db!();
+    let id = unique("ladder");
+    let boss = unique("Nameable");
+
+    let (status, _) = call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 42_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let request = Request::builder()
+        .uri(format!("/v1/leaderboards/{boss}?content_hash={HASH}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, body) = call(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let entries = body.as_array().expect("a ladder is a list");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["duration_ms"], 42_000);
+    assert_eq!(entries[0]["players"][0]["display_name"], "alice");
+
+    // And it says how much that name is worth, rather than implying it is a fact.
+    assert_eq!(entries[0]["players"][0]["identity"], "anonymous");
+
+    // The opaque id is not handed out: a ladder shows who played, it does not
+    // distribute a key that identifies them somewhere else.
+    assert!(entries[0]["players"][0]["player_id"].is_null());
 }
 
 #[tokio::test]

@@ -31,6 +31,9 @@ diesel::table! {
     run_players (run_id, peer) {
         run_id -> Text,
         peer -> Int8,
+        player_id -> Text,
+        display_name -> Text,
+        identity -> Text,
         damage_done -> Int8,
         healing_done -> Int8,
         damage_taken -> Int8,

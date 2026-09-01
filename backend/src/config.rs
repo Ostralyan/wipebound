@@ -27,6 +27,14 @@ pub struct Config {
     /// believing in. Where the line sits is a decision for whoever runs the ladder,
     /// not a constant in a validator.
     pub ranked_max_overreach_cm: i64,
+
+    /// Whether a run needs identities the server actually verified.
+    ///
+    /// Off by default, and it has to be: nothing produces a verified provenance
+    /// yet, so switching it on today empties the ladder. It exists switched off
+    /// because that is the point of storing provenance rather than assuming it --
+    /// the day a platform ticket can be checked, this flag is the whole migration.
+    pub ranked_require_verified_identity: bool,
 }
 
 impl Config {
@@ -47,6 +55,9 @@ impl Config {
                 .ok()
                 .filter(|hash| !hash.trim().is_empty())
                 .unwrap_or_else(|| ranked.first().cloned().unwrap_or_default()),
+            ranked_require_verified_identity: std::env::var("RANKED_REQUIRE_VERIFIED_IDENTITY")
+                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
             ranked_max_overreach_cm: std::env::var("RANKED_MAX_OVERREACH_CM")
                 .ok()
                 .and_then(|value| value.parse().ok())

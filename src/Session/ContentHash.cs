@@ -32,10 +32,41 @@ public static class ContentHash
     /// A backstop only; genuine recursion is bounded by the path set below.
     private const int MaxDepth = 64;
 
-    /// Properties every Resource carries that say nothing about balance.
+    /// <summary>
+    /// Properties that say nothing about balance.
+    ///
+    /// The first group is bookkeeping every Resource carries. DisplayName is a
+    /// different kind of exclusion and the more important one: it is WHO IS
+    /// PLAYING, and personal data has no business in a fingerprint that decides
+    /// whether a run may be ranked. It is exported so it can ride the spawn
+    /// packet to other clients' nameplates, which is exactly what put it in
+    /// front of this walk -- and the fingerprint moved the moment it was added.
+    ///
+    /// Same family as keybinds, which are excluded by not being here at all.
+    /// SelfTest.Controls holds both lines.
+    /// </summary>
     private static readonly HashSet<string> Ignored = new()
     {
         "script", "resource_path", "resource_name", "resource_local_to_scene", "Resource",
+    };
+
+    /// <summary>
+    /// Script variables on NODES that are not content.
+    ///
+    /// Separate from the set above, and deliberately not merged with it: these
+    /// names are only meaningless on a node. "DisplayName" on a scene node is a
+    /// player's name; on an Ability it is the ability's name, which IS content
+    /// and belongs in the fingerprint. Excluding the string globally quietly took
+    /// every ability, status and hazard name out of it.
+    /// </summary>
+    private static readonly HashSet<string> IgnoredNodeProperties = new()
+    {
+        // WHO IS PLAYING. Personal data has no business in a fingerprint that
+        // decides whether a run may be ranked -- the same reason keybinds are not
+        // in it. Exported so it can ride the spawn packet to other clients'
+        // nameplates, which is what put it in front of this walk at all: the
+        // fingerprint moved the moment it was added.
+        "PlayerName",
     };
 
     /// Scenes whose script-declared exports are gameplay parameters.
@@ -189,7 +220,7 @@ public static class ContentHash
             if (!usage.HasFlag(PropertyUsageFlags.Storage)) continue;
 
             string name = property["name"].AsString();
-            if (Ignored.Contains(name)) continue;
+            if (Ignored.Contains(name) || IgnoredNodeProperties.Contains(name)) continue;
 
             names.Add(name);
         }

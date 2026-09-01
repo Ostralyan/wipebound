@@ -64,8 +64,6 @@ public partial class NetworkManager : Node
     /// rather than handed out twice.
     private readonly Dictionary<int, int> _slotByPeer = new();
 
-    private const string PrefsPath = "user://player.cfg";
-
     /// <summary>
     /// Which class this machine's player wants. Local preference only -- the
     /// server treats an arriving one as a request, not an instruction.
@@ -75,18 +73,11 @@ public partial class NetworkManager : Node
     public void SetPreferredClass(int classId)
     {
         PreferredClassId = ValidClassOr(classId, 0);
-
-        var file = new ConfigFile();
-        file.SetValue("player", "class", PreferredClassId);
-        file.Save(PrefsPath);
+        Session.UserPrefs.Write("player", ("class", PreferredClassId));
     }
 
     private void LoadPreferences()
-    {
-        var file = new ConfigFile();
-        if (file.Load(PrefsPath) != Error.Ok) return;
-        PreferredClassId = ValidClassOr(file.GetValue("player", "class", 0).AsInt32(), 0);
-    }
+        => PreferredClassId = ValidClassOr(Session.UserPrefs.Read("player", "class", 0).AsInt32(), 0);
 
     /// <summary>
     /// A class id from anywhere untrusted, or the fallback.
@@ -179,7 +170,8 @@ public partial class NetworkManager : Node
         // A dedicated server simulates but never gets a hero. A host does, and
         // its own preference needs no round trip to reach itself.
         if (!dedicated)
-            SpawnHeroFor(ServerPeerId, PreferredClassId);
+            SpawnHeroFor(ServerPeerId, PreferredClassId,
+                         Session.PlayerIdentity.Id, Session.PlayerIdentity.DisplayName);
 
         return true;
     }
@@ -243,7 +235,7 @@ public partial class NetworkManager : Node
     // Hero spawning -- server only. MultiplayerSpawner replicates the result.
     // ---------------------------------------------------------------------
 
-    private void SpawnHeroFor(int peerId, int classId)
+    private void SpawnHeroFor(int peerId, int classId, string playerId, string displayName)
     {
         if (!IsServer || _heroContainer is null) return;
         if (_slotByPeer.ContainsKey(peerId)) return;
@@ -270,12 +262,18 @@ public partial class NetworkManager : Node
         // rather than three copies of one.
         hero.ClassId = ValidClassOr(classId, slot % System.Enum.GetValues<Combat.HeroClass>().Length);
 
+        // Server-stamped, because the server is the only party that knows how
+        // much it checked. Nothing was checked, so: anonymous.
+        hero.PlayerId = playerId;
+        hero.PlayerName = displayName;
+        hero.IdentityProvider = Session.PlayerIdentity.Anonymous;
+
         // Server-side only, and never replicated: where this hero returns on death.
         hero.SpawnPoint = spawn;
 
         _slotByPeer[peerId] = slot;
         _heroContainer.AddChild(hero, true);
-        GD.Print($"[net] spawned hero for peer {peerId} in slot {slot} as " +
+        GD.Print($"[net] spawned hero for '{hero.PlayerName}' ({peerId}) in slot {slot} as " +
                  $"{Combat.PlayerKit.NameOf(hero.Class)} at {hero.NetPosition.Round()}");
     }
 
@@ -308,14 +306,20 @@ public partial class NetworkManager : Node
     }
 
     /// <summary>
-    /// "I would like to play this class." A request, not an instruction.
+    /// "This is who I am and what I would like to play." A request, not an
+    /// instruction, and every part of it is untrusted.
     ///
-    /// This is the one client message that cannot go through CommandRouter's
-    /// single door, because every command there acts on a Hero and the entire
-    /// point of this one is that the Hero does not exist yet.
+    /// The one client message that cannot go through CommandRouter's single
+    /// door, because every command there acts on a Hero and the entire point of
+    /// this one is that the Hero does not exist yet.
+    ///
+    /// Note what is NOT a parameter: provenance. A client that could tell the
+    /// server how much to trust its own identity would make the field worthless,
+    /// so the server stamps that itself, from what it actually verified -- which
+    /// today is nothing, hence anonymous.
     /// </summary>
     [Rpc(MultiplayerApi.RpcMode.AnyPeer, CallLocal = false)]
-    private void DeclareClass(int classId)
+    private void DeclarePlayer(int classId, string playerId, string displayName)
     {
         if (!IsServer) return;
 
@@ -325,7 +329,16 @@ public partial class NetworkManager : Node
         // Asking twice does not get you a second hero.
         if (_slotByPeer.ContainsKey(peerId)) return;
 
-        SpawnHeroFor(peerId, classId);
+        // A malformed id gets a throwaway rather than a refusal, for the same
+        // reason a malformed class does: only a modified client produces one and
+        // there is nothing to win by it. It cannot collide with anybody.
+        string id = Session.PlayerIdentity.IsWellFormedId(playerId)
+            ? playerId
+            : System.Guid.NewGuid().ToString("N");
+
+        // Re-cleaned here. The client cleaning its own name proves nothing about
+        // what actually arrived, and this string reaches the server's log.
+        SpawnHeroFor(peerId, classId, id, Session.PlayerIdentity.CleanName(displayName));
     }
 
     private void OnPeerDisconnected(long id)
@@ -341,7 +354,8 @@ public partial class NetworkManager : Node
         Status($"Connected as peer {LocalPeerId}.");
 
         // Nothing of ours exists on the server until it knows what to build.
-        RpcId(ServerPeerId, MethodName.DeclareClass, PreferredClassId);
+        RpcId(ServerPeerId, MethodName.DeclarePlayer, PreferredClassId,
+              Session.PlayerIdentity.Id, Session.PlayerIdentity.DisplayName);
     }
 
     private static double Clock() => Time.GetTicksMsec() / 1000.0;
@@ -409,6 +423,11 @@ public partial class NetworkManager : Node
             //   --class 2   (0 Warden, 1 Ember, 2 Verdant)
             if (args[i] == "--class" && int.TryParse(args[i + 1], out int chosen))
                 SetPreferredClass(chosen);
+
+            // A headless client has no lobby to type a name into, and a run log
+            // full of "hero 825107506" is unreadable.
+            //   --name alice
+            if (args[i] == "--name") Session.PlayerIdentity.SetDisplayName(args[i + 1]);
         }
 
         for (int i = 0; i < args.Length; i++)
