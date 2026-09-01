@@ -577,7 +577,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     private static bool TryAbilitySlot(Key keycode, out int slot)
     {
-        slot = keycode switch { Key.Q => 0, Key.W => 1, Key.E => 2, Key.R => 3, _ => -1 };
+        slot = keycode switch { Key.Q => 0, Key.W => 1, Key.E => 2, Key.R => 3, Key.Key1 => 4, _ => -1 };
         return slot >= 0;
     }
 }

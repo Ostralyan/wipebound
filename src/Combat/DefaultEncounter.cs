@@ -134,6 +134,55 @@ public static class DefaultEncounter
             Effects = new Array<AbilityEffect> { new StackEffect { TotalDamage = 220f } },
         };
 
+        // Only expressible because statuses can act when they expire: the bomb goes
+        // on somebody, and the raid has nine metres to spread before it lands.
+        var blight = new Ability
+        {
+            Id = "blight",
+            DisplayName = "Blight",
+            Shape = TelegraphShape.Circle,
+            Radius = 5f,
+            CastSeconds = 1.8f,
+            Cooldown = 17f,
+            AiTargeting = AiTargeting.RandomEnemy,
+            Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = new Color("f43f5e"),
+            Effects = new Array<AbilityEffect>
+            {
+                new ApplyStatusEffect { StatusId = StatusLibrary.Detonation },
+            },
+        };
+
+        // Ground that stays dangerous, so the arena shrinks as the fight goes on
+        // rather than resetting to empty after every dodge.
+        var cinders = new Ability
+        {
+            Id = "cinders",
+            DisplayName = "Cinders",
+            Shape = TelegraphShape.Circle,
+            Radius = 7.5f,
+            CastSeconds = 2.0f,
+            Cooldown = 14f,
+            AiTargeting = AiTargeting.RandomEnemy,
+            Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = new Color("fb7185"),
+            Effects = new Array<AbilityEffect>
+            {
+                new DamageEffect { Amount = 18f },
+                new SpawnHazardEffect
+                {
+                    Definition = new Hazard
+                    {
+                        Id = "cinders", DisplayName = "Cinders",
+                        Duration = 14f, TickInterval = 0.75f,
+                        Affects = TargetFilter.Enemies,
+                        Tint = new Color("f97316"),
+                        OnTick = new Array<AbilityEffect> { new DamageEffect { Amount = 9f } },
+                    },
+                },
+            },
+        };
+
         // Phases are read highest-threshold first. Later phases add mechanics and
         // shorten the gaps -- raising pressure by subtraction of rest, not by
         // inflating numbers.
@@ -151,14 +200,14 @@ public static class DefaultEncounter
                 Name = "Fracture",
                 EntersAtHealthPercent = 60f,
                 RecoverySeconds = 1.8f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders },
             },
             new BossPhase
             {
                 Name = "Wipebound",
                 EntersAtHealthPercent = 25f,
                 RecoverySeconds = 1.2f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, convergence },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, convergence },
             },
         };
     }

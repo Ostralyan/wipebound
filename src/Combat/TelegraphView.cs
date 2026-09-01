@@ -25,7 +25,11 @@ public partial class TelegraphView : Node3D
     private double _castStart;
     private double _castEnd;
 
-    public static void Spawn(Node context, TelegraphArea area, double castStart, double castEnd, Color color)
+    /// Equal to _castEnd for a warning. Later, for a hazard that stays.
+    private double _expiresAt;
+
+    public static void Spawn(Node context, TelegraphArea area, double castStart, double castEnd, Color color,
+                             double expiresAt = 0.0)
     {
         Node root = context.GetTree().GetFirstNodeInGroup("telegraph_root") ?? context.GetParent();
         if (root is null) return;
@@ -35,6 +39,7 @@ public partial class TelegraphView : Node3D
             Name = "Telegraph",
             _castStart = castStart,
             _castEnd = castEnd,
+            _expiresAt = Mathf.Max(expiresAt, castEnd),
             _material = new ShaderMaterial { Shader = EnsureShader(), RenderPriority = 1 },
         };
 
@@ -76,8 +81,15 @@ public partial class TelegraphView : Node3D
 
         if (now <= _castEnd) return;
 
-        // Landed. Bloom white and get out of the way.
-        double since = now - _castEnd;
+        // A hazard sits fully drawn for its whole life rather than counting down.
+        if (now < _expiresAt)
+        {
+            _material.SetShaderParameter("fill", 1f);
+            return;
+        }
+
+        // Landed, or burnt out. Bloom white and get out of the way.
+        double since = now - _expiresAt;
         if (since >= FlashSeconds)
         {
             QueueFree();

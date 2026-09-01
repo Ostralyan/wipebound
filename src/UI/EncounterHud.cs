@@ -68,6 +68,7 @@ public partial class EncounterHud : Control
         _netDebug = GetNode<Label>("NetDebug");
 
         CombatDirector.Instance.CastStarted += OnCastStarted;
+        CombatDirector.Instance.CastInterrupted += OnCastInterrupted;
         NetworkManager.Instance.LocalHeroReady += OnLocalHeroReady;
 
         _playerFrame.Visible = false;
@@ -112,6 +113,13 @@ public partial class EncounterHud : Control
         _castStart = startTime;
         _castEnd = endTime;
         _casting = true;
+    }
+
+    /// An interrupted cast never resolves, so the bar must not keep filling as if
+    /// it will.
+    private void OnCastInterrupted(int casterTeam)
+    {
+        if ((Team)casterTeam == Team.Enemies) _casting = false;
     }
 
     private void UpdateBoss()

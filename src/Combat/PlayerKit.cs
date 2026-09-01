@@ -94,5 +94,24 @@ public static class PlayerKit
                 new ApplyStatusEffect { StatusId = StatusLibrary.Burning },
             },
         },
+
+        // Slot 4 (1). The reason casts became objects: stopping one is a list
+        // removal. Short range and a long cooldown, so it is a read on the boss's
+        // cast bar rather than something you hold down.
+        new Ability
+        {
+            Id = "rebuke",
+            DisplayName = "Rebuke",
+            Shape = TelegraphShape.Cone,
+            Origin = AbilityOrigin.FromCasterTowardAim,
+            Radius = 12f,
+            ConeAngleDegrees = 70f,
+            CastSeconds = 0f,
+            Cooldown = 15f,
+            ManaCost = 20f,
+            Affects = TargetFilter.Enemies,
+            ShowTelegraph = false,
+            Effects = new Array<AbilityEffect> { new InterruptEffect() },
+        },
     };
 }

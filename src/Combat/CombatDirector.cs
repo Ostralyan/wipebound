@@ -4,6 +4,16 @@ using Wipebound.Net;
 
 namespace Wipebound.Combat;
 
+/// <summary>A patch of ground that keeps hurting. Server-side; clients draw it.</summary>
+public sealed class HazardInstance
+{
+    public Hazard Definition { get; init; }
+    public ICombatant Owner { get; init; }
+    public TelegraphArea Area { get; init; }
+    public double ExpiresAt { get; init; }
+    public double NextTickAt { get; set; }
+}
+
 /// <summary>One cast in flight. Server-side; clients only ever see the telegraph.</summary>
 public sealed class CastInstance
 {
@@ -13,6 +23,10 @@ public sealed class CastInstance
     public double StartAt { get; init; }
     public double CastEndAt { get; init; }
     public double ResolveAt { get; init; }
+
+    /// Set instead of removing, so a cast can be cancelled while the list that
+    /// holds it is being walked.
+    public bool Cancelled { get; set; }
 }
 
 /// <summary>
@@ -41,7 +55,11 @@ public partial class CombatDirector : Node
     [Signal] public delegate void CastStartedEventHandler(int casterTeam, string casterName, string label,
                                                           double startTime, double endTime, Color color);
 
+    /// Fires when a cast ends without resolving.
+    [Signal] public delegate void CastInterruptedEventHandler(int casterTeam);
+
     private readonly List<CastInstance> _pending = new();
+    private readonly List<HazardInstance> _hazards = new();
 
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
@@ -79,9 +97,109 @@ public partial class CombatDirector : Node
         return false;
     }
 
-    public void CancelFor(ICombatant caster) => _pending.RemoveAll(cast => ReferenceEquals(cast.Caster, caster));
+    /// <summary>
+    /// Drop whatever this caster had in flight. Interrupts and wipes both land here;
+    /// with casts as objects, stopping one is a list removal rather than a special
+    /// case threaded through whoever was casting.
+    /// </summary>
+    public void CancelFor(ICombatant caster)
+    {
+        bool any = false;
 
-    public void CancelAll() => _pending.Clear();
+        // MARK, never remove. An interrupt reaches this from inside the resolution
+        // of another cast, so removing here would mutate the list _PhysicsProcess is
+        // walking -- which is exactly the exception the first interrupt produced.
+        foreach (CastInstance cast in _pending)
+        {
+            if (cast.Cancelled || !ReferenceEquals(cast.Caster, caster)) continue;
+            cast.Cancelled = true;
+            any = true;
+        }
+
+        if (any && caster is not null) Rpc(MethodName.CastEnded, (int)caster.Team);
+    }
+
+    public void CancelAll()
+    {
+        foreach (CastInstance cast in _pending) cast.Cancelled = true;
+        _hazards.Clear();
+    }
+
+    // ---------------------------------------------------------------------
+    // Hazards
+    // ---------------------------------------------------------------------
+
+    public void SpawnHazard(ICombatant owner, Hazard definition, TelegraphArea area, double now)
+    {
+        if (!IsServer || definition is null) return;
+
+        GD.Print($"[hazard] {definition.DisplayName} at {Flat(area.Center)} r={area.Radius} for {definition.Duration}s");
+
+        _hazards.Add(new HazardInstance
+        {
+            Definition = definition,
+            Owner = owner,
+            Area = area,
+            ExpiresAt = now + definition.Duration,
+            NextTickAt = now,
+        });
+
+        // Drawn as a telegraph that is already full and simply persists: a hazard is
+        // not counting down to anything, it is dangerous the whole time.
+        Rpc(MethodName.ShowHazard, area.ToDictionary(), now, now + definition.Duration, definition.Tint);
+    }
+
+    private void TickHazards(double now)
+    {
+        for (int i = _hazards.Count - 1; i >= 0; i--)
+        {
+            HazardInstance hazard = _hazards[i];
+
+            if (now >= hazard.ExpiresAt)
+            {
+                _hazards.RemoveAt(i);
+                continue;
+            }
+
+            if (now < hazard.NextTickAt) continue;
+            hazard.NextTickAt = now + Mathf.Max(0.05f, hazard.Definition.TickInterval);
+
+            List<ICombatant> candidates = Combatants.Living(this, hazard.Owner, hazard.Definition.Affects);
+            var standing = new List<ICombatant>();
+
+            foreach (ICombatant candidate in candidates)
+                if (hazard.Area.Contains(candidate.CombatPosition))
+                    standing.Add(candidate);
+
+            if (standing.Count == 0) continue;
+
+            // Same spirit as the resolve log: say who the server thinks is standing
+            // in it, so "I was not in that" can be checked rather than argued.
+            GD.Print($"[hazard] {hazard.Definition.DisplayName} caught {standing.Count} " +
+                     $"({string.Join(", ", standing.ConvertAll(c => c.CombatName))})");
+
+            var context = new EffectContext
+            {
+                AbilityName = hazard.Definition.DisplayName,
+                Caster = hazard.Owner,
+                Area = hazard.Area,
+                Targets = standing,
+                Candidates = candidates,
+                Now = now,
+            };
+
+            foreach (AbilityEffect effect in hazard.Definition.OnTick)
+                effect?.Resolve(context);
+        }
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void ShowHazard(Godot.Collections.Dictionary areaData, double from, double until, Color color)
+        => TelegraphView.Spawn(this, TelegraphArea.FromDictionary(areaData), from, from, color, until);
+
+    /// Lets a HUD stop showing a cast bar for something that was interrupted.
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void CastEnded(int casterTeam) => EmitSignal(SignalName.CastInterrupted, casterTeam);
 
     /// <summary>
     /// Start a cast. The caller is responsible for having already validated it --
@@ -140,27 +258,39 @@ public partial class CombatDirector : Node
 
     public override void _PhysicsProcess(double delta)
     {
-        if (!IsServer || _pending.Count == 0) return;
+        if (!IsServer) return;
 
         double now = Now;
+        TickHazards(now);
 
-        for (int i = _pending.Count - 1; i >= 0; i--)
+        if (_pending.Count == 0) return;
+
+        // Walk forwards over the casts that existed when the frame began, and never
+        // remove while walking. Resolving a cast runs arbitrary effects, and those
+        // effects can cancel casts or start new ones; a snapshot bound plus
+        // mark-and-sweep makes that safe instead of a race with the iterator.
+        int existing = _pending.Count;
+
+        for (int i = 0; i < existing; i++)
         {
             CastInstance cast = _pending[i];
+            if (cast.Cancelled) continue;
 
             // A caster that died or was freed mid-cast takes its mechanic with it.
             // Without this a dead boss keeps hitting people.
             if (cast.Caster?.Node is null || !GodotObject.IsInstanceValid(cast.Caster.Node) || !cast.Caster.IsAlive)
             {
-                _pending.RemoveAt(i);
+                cast.Cancelled = true;
                 continue;
             }
 
             if (now < cast.ResolveAt) continue;
 
-            _pending.RemoveAt(i);
+            cast.Cancelled = true;
             Resolve(cast, now);
         }
+
+        _pending.RemoveAll(cast => cast.Cancelled);
     }
 
     private void Resolve(CastInstance cast, double now)
