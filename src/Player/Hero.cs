@@ -51,11 +51,16 @@ public partial class Hero : CharacterBody3D, ICombatant
     private readonly ResourcePool _health = new(100f);
     private readonly ResourcePool _mana = new(100f);
     private readonly StatusTracker _status = new();
+    private readonly Contribution _contribution = new();
 
     [Export] public float Health { get => _health.Current; set => _health.Current = value; }
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
     [Export] public float Mana { get => _mana.Current; set => _mana.Current = value; }
     [Export] public float ManaMax { get => _mana.Max; set => _mana.Max = value; }
+
+    [Export] public float DamageDone { get => _contribution.DamageDone; set => _contribution.DamageDone = value; }
+    [Export] public float HealingDone { get => _contribution.HealingDone; set => _contribution.HealingDone = value; }
+    [Export] public float DamageTaken { get => _contribution.DamageTaken; set => _contribution.DamageTaken = value; }
 
     /// The whole status set as one small string. See StatusTracker for why a string.
     [Export] public string StatusPayload { get => _status.Encoded; set => _status.Decode(value); }
@@ -73,6 +78,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     public ResourcePool HealthPool => _health;
     public ResourcePool ManaPool => _mana;
     public StatusTracker Status => _status;
+    public Contribution Contribution => _contribution;
     public Node3D Node => this;
 
     /// <summary>
@@ -243,8 +249,8 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     public void Heal(float amount, ICombatant source, string label)
     {
-        if (!IsServer || !IsAlive || amount <= 0f) return;
-        _health.Restore(amount);
+        if (!IsServer || !IsAlive) return;
+        Combatants.ResolveHealing(amount, source, this);
     }
 
     /// ICombatant knockback entry point; see ServerPush for why it is a request.
@@ -262,6 +268,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         _health.Fill();
         _mana.Fill();
         _status.Clear();
+        _contribution.Clear();
         ClearCooldowns();
         ServerTeleport(SpawnPoint);
         GD.Print($"[combat] {CombatName} revived");

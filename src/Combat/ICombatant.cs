@@ -49,6 +49,9 @@ public interface ICombatant
     bool IsAlive { get; }
     ResourcePool HealthPool { get; }
 
+    /// Running tally of what this combatant has done this attempt.
+    Contribution Contribution { get; }
+
     /// Timed modifiers currently applied. Server-authoritative, replicated for the
     /// HUD and -- because hero movement is client-authoritative -- so a slowed
     /// client knows it is slowed.
@@ -123,7 +126,35 @@ public static class Combatants
     public static float ResolveIncoming(float amount, ICombatant source, ICombatant target)
     {
         float scaled = ScaleDamage(amount, source, target);
-        return target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled);
+        float landed = target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled);
+
+        // Attribution belongs here and nowhere else. This is already the one place
+        // that knows the final number, so recording it costs nothing and no future
+        // effect can forget to.
+        if (source?.Contribution is not null) source.Contribution.DamageDone += landed;
+
+        if (target?.Contribution is not null)
+        {
+            target.Contribution.DamageTaken += landed;
+            target.Contribution.DamageAbsorbed += scaled - landed;
+        }
+
+        return landed;
+    }
+
+    /// <summary>
+    /// The healing counterpart, so credit works the same way in both directions and
+    /// there is somewhere obvious to put healing modifiers later.
+    /// </summary>
+    public static float ResolveHealing(float amount, ICombatant source, ICombatant target)
+    {
+        if (amount <= 0f || target?.HealthPool is null) return 0f;
+
+        // Credit what actually landed, not what was requested. Overhealing a
+        // full-health ally is not a contribution.
+        float landed = target.HealthPool.Restore(amount);
+        if (source?.Contribution is not null) source.Contribution.HealingDone += landed;
+        return landed;
     }
 
     public static ICombatant ByDistance(IReadOnlyList<ICombatant> from, Vector3 origin, bool nearest)

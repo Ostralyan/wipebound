@@ -40,6 +40,15 @@ properties/4/replication_mode = 2
 properties/5/path = NodePath(".:StatusPayload")
 properties/5/spawn = true
 properties/5/replication_mode = 2
+properties/6/path = NodePath(".:DamageDone")
+properties/6/spawn = true
+properties/6/replication_mode = 2
+properties/7/path = NodePath(".:HealingDone")
+properties/7/spawn = true
+properties/7/replication_mode = 2
+properties/8/path = NodePath(".:DamageTaken")
+properties/8/spawn = true
+properties/8/replication_mode = 2
 
 [node name="Hero" type="CharacterBody3D"]
 collision_layer = 2

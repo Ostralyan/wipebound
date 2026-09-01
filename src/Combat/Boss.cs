@@ -31,6 +31,7 @@ public partial class Boss : Node3D, ICombatant
     // --- Replicated by StatsSync. Authority: the server. ---
     private readonly ResourcePool _health = new(4000f);
     private readonly StatusTracker _status = new();
+    private readonly Contribution _contribution = new();
 
     [Export] public float Health { get => _health.Current; set => _health.Current = value; }
     [Export] public float HealthMax { get => _health.Max; set => _health.Max = value; }
@@ -48,6 +49,7 @@ public partial class Boss : Node3D, ICombatant
     public bool IsAlive => !_health.IsEmpty;
     public ResourcePool HealthPool => _health;
     public StatusTracker Status => _status;
+    public Contribution Contribution => _contribution;
     public Node3D Node => this;
 
     /// Bosses are anchored. Knockback effects are safe to point at one; they simply
@@ -249,14 +251,15 @@ public partial class Boss : Node3D, ICombatant
 
     public void Heal(float amount, ICombatant source, string label)
     {
-        if (!IsServer || !IsAlive || amount <= 0f) return;
-        _health.Restore(amount);
+        if (!IsServer || !IsAlive) return;
+        Combatants.ResolveHealing(amount, source, this);
     }
 
     private void RestartEncounter()
     {
         _health.Fill();
         _status.Clear();
+        _contribution.Clear();
         PhaseIndex = 0;
         _readyAt.Clear();
         _nextCastAt = Now + 2.0;

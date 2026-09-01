@@ -42,6 +42,8 @@ public partial class EncounterHud : Control
     private HBoxContainer _abilityRow;
     private HBoxContainer _buffRow;
 
+    private VBoxContainer _meterRows;
+    private readonly List<Label> _meterLabels = new();
     private Label _netDebug;
 
     private Boss _boss;
@@ -68,6 +70,7 @@ public partial class EncounterHud : Control
         _heroMana = GetNode<ProgressBar>("PlayerFrame/HeroMana");
         _abilityRow = GetNode<HBoxContainer>("PlayerFrame/Abilities");
 
+        _meterRows = GetNode<VBoxContainer>("Meter");
         _netDebug = GetNode<Label>("NetDebug");
 
         CombatDirector.Instance.CastStarted += OnCastStarted;
@@ -95,6 +98,7 @@ public partial class EncounterHud : Control
         UpdateCast(now);
         UpdatePlayer(now);
         UpdateNetDebug();
+        UpdateMeter();
     }
 
     // -- boss ------------------------------------------------------------
@@ -272,6 +276,47 @@ public partial class EncounterHud : Control
         var label = new Label { MouseFilter = MouseFilterEnum.Ignore };
         row.AddChild(label);
         pool.Add(label);
+        return label;
+    }
+
+    /// <summary>
+    /// Who actually did what. Costs nothing to display because the numbers are
+    /// recorded at the damage chokepoint and replicate with the rest of a hero's
+    /// state -- and it answers "why did we wipe" with something other than opinion.
+    /// </summary>
+    private void UpdateMeter()
+    {
+        var heroes = new List<Hero>();
+        foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
+            if (node is Hero hero) heroes.Add(hero);
+
+        heroes.Sort((a, b) => b.DamageDone.CompareTo(a.DamageDone));
+
+        for (int i = 0; i < heroes.Count; i++)
+        {
+            Label label = i < _meterLabels.Count ? _meterLabels[i] : NewMeterLabel();
+            Hero hero = heroes[i];
+
+            string healing = hero.HealingDone > 0f ? $"  +{Mathf.RoundToInt(hero.HealingDone)}" : "";
+            label.Text = $"{hero.PeerId}   {Mathf.RoundToInt(hero.DamageDone)}{healing}";
+            label.Modulate = hero.IsLocalPlayer ? new Color("4ade80") : new Color(1f, 1f, 1f, 0.75f);
+            label.Visible = true;
+        }
+
+        for (int i = heroes.Count; i < _meterLabels.Count; i++)
+            _meterLabels[i].Visible = false;
+    }
+
+    private Label NewMeterLabel()
+    {
+        var label = new Label
+        {
+            MouseFilter = MouseFilterEnum.Ignore,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+
+        _meterRows.AddChild(label);
+        _meterLabels.Add(label);
         return label;
     }
 

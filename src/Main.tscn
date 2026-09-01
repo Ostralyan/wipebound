@@ -197,6 +197,17 @@ mouse_filter = 2
 alignment = 1
 theme_override_constants/separation = 8
 
+[node name="Meter" type="VBoxContainer" parent="UI/Hud"]
+mouse_filter = 2
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -230.0
+offset_top = 16.0
+offset_right = -16.0
+offset_bottom = 180.0
+grow_horizontal = 0
+theme_override_constants/separation = 2
+
 [node name="NetDebug" type="Label" parent="UI/Hud"]
 mouse_filter = 2
 modulate = Color(1, 1, 1, 0.65)

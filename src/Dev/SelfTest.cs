@@ -33,6 +33,7 @@ public static class SelfTest
         MovementBudget();
         StatusEncoding();
         Resources();
+        Attribution();
         PerSourceStatuses();
         Shields();
         Dispels();
@@ -208,12 +209,14 @@ public static class SelfTest
         public bool IsAlive => !HealthPool.IsEmpty;
         public ResourcePool HealthPool { get; } = new(1000f);
         public StatusTracker Status { get; } = new();
+        public Contribution Contribution { get; } = new();
         public Node3D Node => null;
 
         public void ApplyDamage(float amount, ICombatant source, string label)
             => HealthPool.Drain(Combatants.ResolveIncoming(amount, source, this));
 
-        public void Heal(float amount, ICombatant source, string label) => HealthPool.Restore(amount);
+        public void Heal(float amount, ICombatant source, string label)
+            => Combatants.ResolveHealing(amount, source, this);
         public void Displace(Vector3 destination, float travelSeconds) { }
         public void OnEncounterReset() { }
     }
@@ -224,6 +227,45 @@ public static class SelfTest
         configure(definition);
         StatusLibrary.Register(definition);
         return definition;
+    }
+
+    // -- attribution -----------------------------------------------------
+
+    private static void Attribution()
+    {
+        var attacker = new Dummy { CombatId = 1 };
+        var victim = new Dummy { CombatId = 2, Team = Team.Enemies };
+
+        victim.ApplyDamage(50f, attacker, "test");
+        Near(attacker.Contribution.DamageDone, 50f, "damage is credited to whoever dealt it");
+        Near(victim.Contribution.DamageTaken, 50f, "and counted against whoever took it");
+        Near(victim.Contribution.DamageDone, 0f, "taking damage is not dealing it");
+
+        // A shield means less damage landed, and the meter must say so rather than
+        // crediting a hit that never reached anybody's health.
+        var shielded = new Dummy { CombatId = 3, Team = Team.Enemies };
+        shielded.Status.Apply(StatusLibrary.Get(StatusLibrary.Warded), null, 100.0);
+        shielded.ApplyDamage(20f, attacker, "test");
+        Near(attacker.Contribution.DamageDone, 50f, "damage absorbed by a shield is not credited as damage done");
+        Near(shielded.Contribution.DamageAbsorbed, 20f, "absorbed damage is tracked separately");
+        Near(shielded.Contribution.DamageTaken, 0f, "a fully absorbed hit is not damage taken");
+
+        // Vulnerability multiplies what actually lands, so the meter should follow it.
+        var vulnerable = new Dummy { CombatId = 4, Team = Team.Enemies };
+        vulnerable.Status.Apply(StatusLibrary.Get(StatusLibrary.Sundered), null, 100.0);
+        vulnerable.ApplyDamage(100f, attacker, "test");
+        Near(attacker.Contribution.DamageDone, 170f, "credit follows the modified number, not the raw one");
+
+        // Healing credits what landed, not what was asked for.
+        var healer = new Dummy { CombatId = 5 };
+        var hurt = new Dummy { CombatId = 6 };
+        hurt.HealthPool.Current = hurt.HealthPool.Max - 30f;
+        hurt.Heal(100f, healer, "test");
+        Near(healer.Contribution.HealingDone, 30f, "overhealing is not a contribution");
+        Near(hurt.HealthPool.Current, hurt.HealthPool.Max, "but the target is topped up");
+
+        attacker.Contribution.Clear();
+        Near(attacker.Contribution.DamageDone, 0f, "a new attempt starts from zero");
     }
 
     // -- per-source instances --------------------------------------------
