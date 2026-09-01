@@ -258,6 +258,37 @@ offset in the bottom left.
 - Adds, as a `SpawnEffect` — the loop already takes any effect you write.
 - Interrupt and cancellation, so a mechanic can be stopped mid-cast.
 
+## Who the adds come for
+
+There is deliberately no threat system. Threat answers one question -- who does the
+AI attack -- and the cumulative kind answers it by manufacturing a tank, which is a
+role this game does not want. It would also have had nothing to govern: the boss
+has no autoattack at all, and every one of its mechanics is a telegraphed area.
+
+Instead each minion carries a `TargetRule`, so different adds can behave
+differently in the same fight:
+
+| Rule | What it asks of players |
+| --- | --- |
+| `Nearest` | Proximity costs you; adds are a spatial problem |
+| `Fixate` | It is YOUR add now -- run, kill it, or ask for help |
+| `HighestRecentDamage` | Burst and it turns on you; a real greed tension |
+| `LowestHealth` | Protect whoever is already hurt |
+
+`HighestRecentDamage` is a threat table and worth calling one. What keeps it from
+being a tank mechanic is that it lives on a single minion and decays with a four
+second half-life, so nobody can hold it -- it tracks the current biggest problem
+rather than accumulating into a job.
+
+Fixate marks its victim with the `Hunted` status, which is what makes being chased
+legible to the target and to everyone who could help. It is also how several adds
+spawning together avoid all picking the same person: they prefer somebody not
+already hunted, and so never need to know about each other.
+
+If a tank moment is ever wanted, express it positionally -- "the boss cleaves
+whoever is closest" makes somebody choose to be closest, which is a decision. A
+threat table makes somebody win an invisible arithmetic contest offscreen.
+
 ## Hazards and interrupts
 
 `Cinders` leaves fourteen seconds of fire where it landed. Hazards reuse the

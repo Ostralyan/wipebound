@@ -29,6 +29,14 @@ public partial class Minion : CharacterBody3D, ICombatant
 
     [Export] public float CorpseSeconds { get; set; } = 1.5f;
 
+    /// How it decides who it is coming for. Set per summon, so different adds can
+    /// behave differently in the same fight.
+    [Export] public TargetRule Targeting { get; set; } = TargetRule.Nearest;
+
+    /// Fixate only: how long before it loses interest and picks again. Long enough
+    /// to be a problem, short enough that nobody becomes the permanent victim.
+    [Export] public float FixateSeconds { get; set; } = 9f;
+
     // --- Replicated. Authority: the server, for all of it. ---
     [Export] public int CombatId { get; set; } = -100;
     [Export] public Vector3 NetPosition { get; set; }
@@ -67,6 +75,16 @@ public partial class Minion : CharacterBody3D, ICombatant
     private double _attackReadyAt;
     private double _diesAt;
 
+    // Fixate state.
+    private ICombatant _fixation;
+    private double _fixateUntil;
+    private double _markAt;
+
+    /// Recent damage by CombatId, for HighestRecentDamage. Local to this minion and
+    /// decaying, which is the whole difference between attention and a threat table
+    /// somebody can hold.
+    private readonly Dictionary<int, float> _attention = new();
+
     public override void _Ready()
     {
         AddToGroup(Combatants.GroupName);
@@ -93,6 +111,7 @@ public partial class Minion : CharacterBody3D, ICombatant
 
         double now = Now;
         _status.Tick(this, now);
+        if (Targeting == TargetRule.HighestRecentDamage) TargetSelection.Decay(_attention, dt);
 
         if (!IsAlive)
         {
@@ -109,7 +128,7 @@ public partial class Minion : CharacterBody3D, ICombatant
 
     private void Hunt(float dt, double now)
     {
-        ICombatant prey = ChooseTarget();
+        ICombatant prey = ChooseTarget(now);
         if (prey is null)
         {
             Velocity = Vector3.Zero;
@@ -142,18 +161,53 @@ public partial class Minion : CharacterBody3D, ICombatant
         CombatDirector.Instance.Begin(this, Attack, prey.CombatPosition);
     }
 
-    /// <summary>Nearest living player. Becomes a threat lookup once threat exists.</summary>
-    private ICombatant ChooseTarget()
+    private ICombatant ChooseTarget(double now)
     {
         List<ICombatant> prey = Combatants.Living(this, this, TargetFilter.Enemies);
-        return prey.Count == 0 ? null : Combatants.ByDistance(prey, GlobalPosition, nearest: true);
+        if (prey.Count == 0)
+        {
+            _fixation = null;
+            return null;
+        }
+
+        if (Targeting != TargetRule.Fixate)
+            return TargetSelection.Choose(Targeting, prey, GlobalPosition, null, _attention);
+
+        // Lose interest on a timer, so being hunted is a moment rather than a role.
+        ICombatant keeping = now >= _fixateUntil ? null : _fixation;
+        ICombatant chosen = TargetSelection.Choose(TargetRule.Fixate, prey, GlobalPosition, keeping);
+
+        if (!ReferenceEquals(chosen, _fixation))
+        {
+            _fixation = chosen;
+            _fixateUntil = now + FixateSeconds;
+            _markAt = 0.0;
+            GD.Print($"[minion] {CombatName} fixates on {chosen?.CombatName}");
+        }
+
+        // Keep the marker alive, refreshed rather than reapplied every frame. It is
+        // what makes being chased visible -- to the target and to everyone who
+        // could help -- and it is how two adds avoid picking the same person.
+        if (chosen is not null && now >= _markAt)
+        {
+            _markAt = now + 2.0;
+            chosen.Status.Apply(StatusLibrary.Get(StatusLibrary.Hunted), this, now);
+        }
+
+        return chosen;
     }
 
     public void ApplyDamage(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(Combatants.ResolveIncoming(amount, source, this));
+        float landed = Combatants.ResolveIncoming(amount, source, this);
+        _health.Drain(landed);
+
+        // Remembered only by this minion, and only for a few seconds.
+        if (source is not null && landed > 0f)
+            _attention[source.CombatId] = _attention.GetValueOrDefault(source.CombatId) + landed;
+
         if (!IsAlive) GD.Print($"[combat] {CombatName} destroyed by {label}");
     }
 

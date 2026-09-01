@@ -34,6 +34,7 @@ public static class SelfTest
         StatusEncoding();
         Resources();
         Attribution();
+        Targeting();
         PerSourceStatuses();
         Shields();
         Dispels();
@@ -280,6 +281,77 @@ public static class SelfTest
 
         attacker.Contribution.Clear();
         Near(attacker.Contribution.DamageDone, 0f, "a new attempt starts from zero");
+    }
+
+    // -- who the adds come for -------------------------------------------
+
+    private static void Targeting()
+    {
+        var near = new Dummy { CombatId = 1, CombatName = "near" };
+        var far = new Dummy { CombatId = 2, CombatName = "far" };
+        var hurt = new Dummy { CombatId = 3, CombatName = "hurt" };
+        hurt.HealthPool.Current = hurt.HealthPool.Max * 0.2f;
+
+        var everyone = new List<ICombatant> { near, far, hurt };
+
+        // Dummy reports a fixed position, so distance is stubbed by ordering: all
+        // three sit at the origin and Nearest resolves to the first.
+        Check(TargetSelection.Choose(TargetRule.Nearest, everyone, Vector3.Zero) is not null,
+              "nearest always picks somebody");
+
+        Check(ReferenceEquals(TargetSelection.Choose(TargetRule.LowestHealth, everyone, Vector3.Zero), hurt),
+              "lowest health goes for whoever is already hurt");
+
+        // Health FRACTION, not absolute, so a bigger pool is not automatically safer.
+        var big = new Dummy { CombatId = 4, CombatName = "big" };
+        big.HealthPool.Max = 5000f;
+        big.HealthPool.Current = 500f;   // 10%, worse off than hurt's 20%
+        Check(ReferenceEquals(TargetSelection.Choose(TargetRule.LowestHealth,
+                  new List<ICombatant> { hurt, big }, Vector3.Zero), big),
+              "lowest health compares fractions, not raw numbers");
+
+        // Attention: whoever hit hardest recently, and no opinion means proximity.
+        var attention = new Dictionary<int, float> { [far.CombatId] = 120f, [near.CombatId] = 30f };
+        Check(ReferenceEquals(TargetSelection.Choose(TargetRule.HighestRecentDamage, everyone,
+                  Vector3.Zero, null, attention), far),
+              "attention follows whoever hurt it most");
+
+        Check(TargetSelection.Choose(TargetRule.HighestRecentDamage, everyone, Vector3.Zero, null,
+                  new Dictionary<int, float>()) is not null,
+              "an unhit minion still picks somebody rather than standing idle");
+
+        // Decay is what stops attention becoming a job somebody can hold.
+        var fading = new Dictionary<int, float> { [1] = 100f };
+        TargetSelection.Decay(fading, TargetSelection.AttentionHalfLife);
+        Near(fading[1], 50f, "attention halves over one half-life", 0.5f);
+        for (int i = 0; i < 40; i++) TargetSelection.Decay(fading, 1f);
+        Check(!fading.ContainsKey(1), "attention eventually forgets entirely");
+
+        // Fixate keeps its victim while they are available...
+        ICombatant kept = TargetSelection.Choose(TargetRule.Fixate, everyone, Vector3.Zero, keeping: far);
+        Check(ReferenceEquals(kept, far), "fixate stays on its victim");
+
+        // ...and lets go when they die, rather than chasing a corpse.
+        far.HealthPool.Current = 0f;
+        var living = new List<ICombatant> { near, hurt };
+        ICombatant replaced = TargetSelection.Choose(TargetRule.Fixate, living, Vector3.Zero, keeping: far);
+        Check(!ReferenceEquals(replaced, far), "fixate releases a dead victim");
+
+        // Adds spawning together split up: the Hunted marker is how they avoid
+        // each other without knowing about each other.
+        near.Status.Apply(StatusLibrary.Get(StatusLibrary.Hunted), null, 100.0);
+        ICombatant second = TargetSelection.Choose(TargetRule.Fixate,
+            new List<ICombatant> { near, hurt }, Vector3.Zero);
+        Check(ReferenceEquals(second, hurt), "a second add prefers somebody not already hunted");
+
+        // But it still commits to somebody when everyone is spoken for.
+        hurt.Status.Apply(StatusLibrary.Get(StatusLibrary.Hunted), null, 100.0);
+        Check(TargetSelection.Choose(TargetRule.Fixate,
+                  new List<ICombatant> { near, hurt }, Vector3.Zero) is not null,
+              "a third add still picks somebody when everyone is already hunted");
+
+        Check(TargetSelection.Choose(TargetRule.Fixate, new List<ICombatant>(), Vector3.Zero) is null,
+              "an empty arena yields nobody rather than throwing");
     }
 
     // -- per-source instances --------------------------------------------

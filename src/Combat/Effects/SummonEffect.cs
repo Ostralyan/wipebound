@@ -19,13 +19,17 @@ public partial class SummonEffect : AbilityEffect
 
     [Export] public float Health { get; set; } = 90f;
 
+    /// What the summoned things come for. Different summons can behave differently
+    /// in the same encounter, which is more interesting than one global rule.
+    [Export] public TargetRule Targeting { get; set; } = TargetRule.Nearest;
+
     public override void Resolve(EffectContext context)
     {
         for (int i = 0; i < Count; i++)
         {
             float angle = Mathf.Tau * i / Mathf.Max(1, Count);
             Vector3 at = context.Area.Center + new Vector3(Mathf.Cos(angle), 0f, Mathf.Sin(angle)) * Spread;
-            CombatDirector.Instance?.SpawnMinion(at, Health);
+            CombatDirector.Instance?.SpawnMinion(at, Health, Targeting);
         }
     }
 

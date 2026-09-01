@@ -27,6 +27,7 @@ public static class StatusLibrary
     public const string Burning = "burning";
     public const string Silenced = "silenced";
     public const string Detonation = "detonation";
+    public const string Hunted = "hunted";
 
     static StatusLibrary()
     {
@@ -85,6 +86,19 @@ public static class StatusLibrary
         });
 
         RegisterDetonation();
+
+        // Purely a marker: no modifiers at all. It exists so a fixating add is
+        // LEGIBLE -- to the person being chased, and to everyone who could help.
+        // An add that silently picks someone is confusing rather than tense.
+        //
+        // Not dispellable: cleansing it would make the mechanic vanish rather than
+        // be answered, and being chased is the thing you are meant to answer.
+        Register(new StatusEffect
+        {
+            Id = Hunted, DisplayName = "Hunted", Duration = 5f,
+            Beneficial = false, Tint = new Color("fbbf24"),
+            Dispellable = false,
+        });
     }
 
     private static void RegisterDetonation()

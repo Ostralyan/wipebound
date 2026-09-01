@@ -159,7 +159,7 @@ public partial class CombatDirector : Node
     /// Put a minion on the field. Server only; MultiplayerSpawner replicates it,
     /// and from there it is an ordinary combatant.
     /// </summary>
-    public void SpawnMinion(Vector3 at, float health)
+    public void SpawnMinion(Vector3 at, float health, TargetRule targeting = TargetRule.Nearest)
     {
         if (!IsServer || _minionScene is null) return;
 
@@ -171,6 +171,7 @@ public partial class CombatDirector : Node
         minion.NetPosition = new Vector3(at.X, 0f, at.Z);
         minion.HealthMax = health;
         minion.Health = health;
+        minion.Targeting = targeting;
 
         container.AddChild(minion, true);
     }

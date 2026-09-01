@@ -196,7 +196,17 @@ public static class DefaultEncounter
             AiTargeting = AiTargeting.ArenaCentre,
             Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = new Color("a78bfa"),
-            Effects = new Array<AbilityEffect> { new SummonEffect { Count = 3, Spread = 5f, Health = 90f } },
+            Effects = new Array<AbilityEffect>
+            {
+                // Each one picks somebody and commits, and the Hunted marker keeps
+                // them from all choosing the same person. Three separate problems
+                // rather than one pile.
+                new SummonEffect
+                {
+                    Count = 3, Spread = 5f, Health = 90f,
+                    Targeting = TargetRule.Fixate,
+                },
+            },
         };
 
         // Phases are read highest-threshold first. Later phases add mechanics and
