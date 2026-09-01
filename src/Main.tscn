@@ -86,6 +86,12 @@ shape = SubResource("BoxShape3D_ground")
 _spawnable_scenes = PackedStringArray("res://src/Player/Hero.tscn")
 spawn_path = NodePath("../Heroes")
 
+[node name="Minions" type="Node3D" parent="." groups=["minion_root"]]
+
+[node name="MinionSpawner" type="MultiplayerSpawner" parent="."]
+_spawnable_scenes = PackedStringArray("res://src/Combat/Minion.tscn")
+spawn_path = NodePath("../Minions")
+
 [node name="Telegraphs" type="Node3D" parent="." groups=["telegraph_root"]]
 
 [node name="Boss" type="Node3D" parent="."]

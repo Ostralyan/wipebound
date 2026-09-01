@@ -69,6 +69,12 @@ public partial class CombatDirector : Node
     private readonly HazardField _hazards = new();
     private long _nextId = 1;
 
+    /// Negative and unique, so a minion's statuses can be told apart from another's
+    /// the same way one player's are told apart from another's.
+    private int _nextMinionId = -100;
+
+    private PackedScene _minionScene;
+
     private static bool IsServer => NetworkManager.Instance.IsServer;
 
     /// <summary>
@@ -85,6 +91,7 @@ public partial class CombatDirector : Node
     public override void _Ready()
     {
         Instance = this;
+        _minionScene = GD.Load<PackedScene>("res://src/Combat/Minion.tscn");
         NetworkManager.Instance.ModeChanged += OnSessionBoundary;
     }
 
@@ -141,13 +148,43 @@ public partial class CombatDirector : Node
     {
         _casts.CancelAll();
         _hazards.Clear();
+        if (IsServer) ClearMinions();
 
         // A peer with nobody to talk to still has its own drawings to clear.
         if (CanBroadcast) Rpc(MethodName.ClearTelegraphViews);
         else TelegraphView.EndAll(this);
     }
 
-        // ---------------------------------------------------------------------
+        /// <summary>
+    /// Put a minion on the field. Server only; MultiplayerSpawner replicates it,
+    /// and from there it is an ordinary combatant.
+    /// </summary>
+    public void SpawnMinion(Vector3 at, float health)
+    {
+        if (!IsServer || _minionScene is null) return;
+
+        Node container = GetTree().GetFirstNodeInGroup(Minion.ContainerGroup);
+        if (container is null) return;
+
+        var minion = _minionScene.Instantiate<Minion>();
+        minion.CombatId = _nextMinionId--;
+        minion.NetPosition = new Vector3(at.X, 0f, at.Z);
+        minion.HealthMax = health;
+        minion.Health = health;
+
+        container.AddChild(minion, true);
+    }
+
+    /// <summary>Nothing summoned survives the attempt that summoned it.</summary>
+    private void ClearMinions()
+    {
+        Node container = GetTree()?.GetFirstNodeInGroup(Minion.ContainerGroup);
+        if (container is null) return;
+
+        foreach (Node child in container.GetChildren()) child.QueueFree();
+    }
+
+    // ---------------------------------------------------------------------
     // Hazards
     // ---------------------------------------------------------------------
 

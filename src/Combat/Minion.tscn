@@ -1,0 +1,58 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://src/Combat/Minion.cs" id="1_minion"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_minion"]
+radius = 0.4
+height = 1.4
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_minion"]
+radius = 0.4
+height = 1.4
+
+[sub_resource type="SceneReplicationConfig" id="SceneReplicationConfig_minion"]
+properties/0/path = NodePath(".:CombatId")
+properties/0/spawn = true
+properties/0/replication_mode = 0
+properties/1/path = NodePath(".:NetPosition")
+properties/1/spawn = true
+properties/1/replication_mode = 1
+properties/2/path = NodePath(".:NetFacing")
+properties/2/spawn = true
+properties/2/replication_mode = 1
+properties/3/path = NodePath(".:Health")
+properties/3/spawn = true
+properties/3/replication_mode = 2
+properties/4/path = NodePath(".:HealthMax")
+properties/4/spawn = true
+properties/4/replication_mode = 2
+properties/5/path = NodePath(".:StatusPayload")
+properties/5/spawn = true
+properties/5/replication_mode = 2
+
+[node name="Minion" type="CharacterBody3D"]
+collision_layer = 4
+collision_mask = 1
+script = ExtResource("1_minion")
+
+[node name="Body" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+mesh = SubResource("CapsuleMesh_minion")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.7, 0)
+shape = SubResource("CapsuleShape3D_minion")
+
+[node name="NameLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.9, 0)
+pixel_size = 0.00028
+billboard = 1
+no_depth_test = true
+fixed_size = true
+text = "Shade"
+font_size = 56
+outline_size = 10
+
+[node name="Sync" type="MultiplayerSynchronizer" parent="."]
+replication_interval = 0.05
+replication_config = SubResource("SceneReplicationConfig_minion")

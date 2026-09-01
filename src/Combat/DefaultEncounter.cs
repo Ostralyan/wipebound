@@ -183,6 +183,22 @@ public static class DefaultEncounter
             },
         };
 
+        // Adds. The arena stops being about the boss alone, and the raid has to
+        // decide what to kill and what to survive.
+        var summon = new Ability
+        {
+            Id = "summon",
+            DisplayName = "Rend the Veil",
+            Shape = TelegraphShape.Circle,
+            Radius = 6f,
+            CastSeconds = 2.4f,
+            Cooldown = 26f,
+            AiTargeting = AiTargeting.ArenaCentre,
+            Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = new Color("a78bfa"),
+            Effects = new Array<AbilityEffect> { new SummonEffect { Count = 3, Spread = 5f, Health = 90f } },
+        };
+
         // Phases are read highest-threshold first. Later phases add mechanics and
         // shorten the gaps -- raising pressure by subtraction of rest, not by
         // inflating numbers.
@@ -200,14 +216,14 @@ public static class DefaultEncounter
                 Name = "Fracture",
                 EntersAtHealthPercent = 60f,
                 RecoverySeconds = 1.8f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, summon },
             },
             new BossPhase
             {
                 Name = "Wipebound",
                 EntersAtHealthPercent = 25f,
                 RecoverySeconds = 1.2f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, convergence },
+                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, summon, convergence },
             },
         };
     }
