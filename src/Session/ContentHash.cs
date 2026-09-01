@@ -83,6 +83,15 @@ public static class ContentHash
             node.Free();
         }
 
+        // Autoloads carry tuning too -- the resolve grace a telegraph is judged
+        // against, and the rate a client may act at -- and they are scripts rather
+        // than scenes, so they are constructed directly and freed.
+        foreach (Node singleton in new Node[] { new Combat.CombatDirector(), new Combat.Commands.CommandRouter() })
+        {
+            AppendNode(builder, singleton.GetType().Name, singleton);
+            singleton.Free();
+        }
+
         // The boss lives in the world scene rather than one of its own.
         var world = GD.Load<PackedScene>("res://src/Main.tscn");
         if (world is null) return;

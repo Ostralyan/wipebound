@@ -295,7 +295,7 @@ public partial class CombatDirector : Node
         // an already part-filled telegraph that still finishes on time.
         Rpc(MethodName.ShowTelegraph, cast.Id, area.ToDictionary(), ability.DisplayName,
             now, castEnd, ability.TelegraphColor, (int)caster.Team, caster.CombatName,
-            ability.ShowTelegraph);
+            ability.DrawsTelegraph);
 
         return cast;
     }
@@ -339,7 +339,12 @@ public partial class CombatDirector : Node
     private void Resolve(CastInstance cast, double now)
     {
         Ability ability = cast.Ability;
-        TelegraphArea area = AreaAt(cast);
+
+        if (!TryAreaAt(cast, out TelegraphArea area))
+        {
+            GD.Print($"[resolve] {cast.Caster.CombatName} :: {ability.DisplayName} fizzled, its target is gone");
+            return;
+        }
         List<ICombatant> candidates = Combatants.Living(this, cast.Caster, ability.Affects);
         var targets = new List<ICombatant>();
 
@@ -378,21 +383,27 @@ public partial class CombatDirector : Node
     }
 
     /// <summary>
-    /// Where the ability actually lands.
+    /// Where the ability actually lands, or nothing if it no longer has a target.
     ///
     /// Frozen for every footprint that is a PLACE, because a telegraph rendered on
     /// a client must resolve where it was drawn. Recomputed for the one footprint
-    /// that is a PERSON: a targeted heal follows its target, and a target who has
-    /// died since falls back to the ground they were on rather than vanishing.
+    /// that is a PERSON, so a targeted heal follows whoever it was cast on.
+    ///
+    /// A target that died in the meantime FIZZLES. Falling back to the ground they
+    /// were standing on would land a heal, or a mark, on whoever happened to walk
+    /// over that spot -- an ability aimed at a person should hit that person or
+    /// nobody.
     /// </summary>
-    private TelegraphArea AreaAt(CastInstance cast)
+    private bool TryAreaAt(CastInstance cast, out TelegraphArea area)
     {
-        if (!cast.Ability.RequiresTarget) return cast.Area;
+        area = cast.Area;
+        if (!cast.Ability.RequiresTarget) return true;
 
         ICombatant target = Combatants.ById(this, cast.TargetId);
-        if (target is null || !target.IsAlive) return cast.Area;
+        if (target is null || !target.IsAlive) return false;
 
-        return cast.Ability.BuildArea(cast.Caster.CombatPosition, target.CombatPosition);
+        area = cast.Ability.BuildArea(cast.Caster.CombatPosition, target.CombatPosition);
+        return true;
     }
 
     /// <summary>

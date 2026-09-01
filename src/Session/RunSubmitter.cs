@@ -34,9 +34,17 @@ public partial class RunSubmitter : Node
     private string _serverId;
 
     private readonly Queue<string> _queue = new();
+
+    /// Bodies for runs that could not be written to disk. A spool failure should
+    /// cost durability across a restart, not the run itself.
+    private readonly Dictionary<string, string> _memory = new();
+
+    /// Failures per run, kept across dequeues. Resetting this on every dequeue is
+    /// what turned exponential backoff into a flat two seconds forever.
+    private readonly Dictionary<string, int> _attempts = new();
+
     private string _inFlightId;
     private string _inFlightBody;
-    private int _attempt;
     private double _retryAt;
     private double _clock;
 
@@ -75,26 +83,42 @@ public partial class RunSubmitter : Node
         if (!Configured) return;
 
         string runId = record["run_id"].AsString();
-        DirAccess.MakeDirRecursiveAbsolute(SpoolDir);
+        string json = Json.Stringify(record);
 
-        using DirAccess dir = DirAccess.Open(SpoolDir);
-        if (dir is not null && dir.GetFiles().Length >= MaxSpooled)
+        if (_queue.Count >= MaxSpooled)
         {
-            GD.PushWarning($"[ladder] spool is full ({MaxSpooled}); dropping run {runId}");
+            GD.PushWarning($"[ladder] {MaxSpooled} runs already waiting; dropping {runId}");
             return;
         }
 
-        using FileAccess file = FileAccess.Open(PathFor(runId), FileAccess.ModeFlags.Write);
-        if (file is null)
-        {
-            GD.PushWarning($"[ladder] could not spool run {runId}; sending without a safety net");
-        }
-        else
-        {
-            file.StoreString(Json.Stringify(record));
-        }
+        // Failing to write is a reason to lose durability across a restart, not a
+        // reason to lose the run. This used to discard the body and queue an id
+        // that would then find nothing to send.
+        if (!WriteAtomically(runId, json)) _memory[runId] = json;
 
         _queue.Enqueue(runId);
+    }
+
+    /// <summary>
+    /// Write to a temporary name and rename into place.
+    ///
+    /// Renaming within a directory is atomic, so a crash mid-write leaves a stray
+    /// .tmp rather than a truncated record that would later be posted, refused as
+    /// malformed, and deleted as if it had been judged.
+    /// </summary>
+    private static bool WriteAtomically(string runId, string json)
+    {
+        DirAccess.MakeDirRecursiveAbsolute(SpoolDir);
+
+        string temporary = $"{SpoolDir}/{runId}.tmp";
+
+        using (FileAccess file = FileAccess.Open(temporary, FileAccess.ModeFlags.Write))
+        {
+            if (file is null) return false;
+            file.StoreString(json);
+        }
+
+        return DirAccess.RenameAbsolute(temporary, PathFor(runId)) == Error.Ok;
     }
 
     /// <summary>Anything left on disk from a previous life.</summary>
@@ -106,7 +130,15 @@ public partial class RunSubmitter : Node
         int found = 0;
         foreach (string name in dir.GetFiles())
         {
+            // A .tmp is a write that never completed. It is not a record.
+            if (name.EndsWith(".tmp"))
+            {
+                DirAccess.RemoveAbsolute($"{SpoolDir}/{name}");
+                continue;
+            }
+
             if (!name.EndsWith(".json")) continue;
+
             _queue.Enqueue(name[..^5]);
             found++;
         }
@@ -117,9 +149,11 @@ public partial class RunSubmitter : Node
     private void Settle(string runId)
     {
         if (FileAccess.FileExists(PathFor(runId))) DirAccess.RemoveAbsolute(PathFor(runId));
+
+        _memory.Remove(runId);
+        _attempts.Remove(runId);
         _inFlightId = null;
         _inFlightBody = null;
-        _attempt = 0;
     }
 
     // -- sending ---------------------------------------------------------
@@ -132,26 +166,28 @@ public partial class RunSubmitter : Node
         if (_clock < _retryAt || _queue.Count == 0) return;
 
         string runId = _queue.Dequeue();
-        string body = FileAccess.FileExists(PathFor(runId))
-            ? FileAccess.GetFileAsString(PathFor(runId))
-            : null;
+        string body = BodyFor(runId);
 
         if (string.IsNullOrEmpty(body))
         {
-            // Spooling failed earlier, or somebody removed it. Nothing to send.
+            GD.PushWarning($"[ladder] run {runId} has no body on disk or in memory; giving up on it");
             Settle(runId);
             return;
         }
 
         _inFlightId = runId;
         _inFlightBody = body;
-        _attempt = 0;
         Send();
+    }
+
+    private string BodyFor(string runId)
+    {
+        if (_memory.TryGetValue(runId, out string remembered)) return remembered;
+        return FileAccess.FileExists(PathFor(runId)) ? FileAccess.GetFileAsString(PathFor(runId)) : null;
     }
 
     private void Send()
     {
-        _attempt++;
 
         string[] headers =
         {
@@ -172,10 +208,9 @@ public partial class RunSubmitter : Node
             return;
         }
 
-        // Only 5xx and transport failures are worth trying again. A 4xx will never
-        // become a 201, so retrying it forever would block the queue behind a run
-        // the backend has already refused on its merits.
-        if (responseCode >= 500)
+        // See SubmissionPolicy: server faults, rate limits and fixable credential
+        // problems all wait; a judgement about the payload itself never changes.
+        if (SubmissionPolicy.ShouldRetry(responseCode))
         {
             Retry($"backend returned {responseCode}");
             return;
@@ -195,12 +230,16 @@ public partial class RunSubmitter : Node
     /// </summary>
     private void Retry(string reason)
     {
-        double backoff = Mathf.Min(60.0, Mathf.Pow(2, Mathf.Min(_attempt, 6)));
+        string runId = _inFlightId;
+        int attempt = _attempts.GetValueOrDefault(runId) + 1;
+        _attempts[runId] = attempt;
+
+        double backoff = SubmissionPolicy.BackoffFor(attempt);
         _retryAt = _clock + backoff;
 
-        GD.PushWarning($"[ladder] {reason}; retrying run {_inFlightId} in {backoff}s");
+        GD.PushWarning($"[ladder] {reason}; retrying run {runId} in {backoff}s (attempt {attempt})");
 
-        _queue.Enqueue(_inFlightId);
+        _queue.Enqueue(runId);
         _inFlightId = null;
         _inFlightBody = null;
     }

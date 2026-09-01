@@ -111,16 +111,23 @@ fn run(
     })
 }
 
-/// Skip rather than fail when there is no database, so `cargo test` stays green
-/// on a machine without one while still being the command that runs these.
+/// FAIL without a database, unless skipping was asked for explicitly.
+///
+/// Silently passing was worse than useless: a CI job with no database reported
+/// eight green tests and proved nothing. Opting out has to be a decision somebody
+/// made and can be seen in the job definition.
 macro_rules! require_db {
     () => {
         match state() {
             Some(value) => value,
-            None => {
-                eprintln!("skipped: DATABASE_URL not set");
+            None if std::env::var("WIPEBOUND_SKIP_DB_TESTS").is_ok() => {
+                eprintln!("skipped: WIPEBOUND_SKIP_DB_TESTS is set");
                 return;
             }
+            None => panic!(
+                "DATABASE_URL is not set. Start one with `docker compose up -d`, or set \
+                 WIPEBOUND_SKIP_DB_TESTS=1 to skip these on purpose."
+            ),
         }
     };
 }
@@ -245,6 +252,47 @@ async fn a_different_payload_reusing_an_id_is_a_conflict() {
         "the stored run must be untouched"
     );
     assert_eq!(body["run"]["rankable"], true);
+}
+
+/// The case the previous test suite missed entirely: it only ever varied fields
+/// that were already being compared, so it passed while a different run wearing a
+/// used id was being accepted as a retry.
+#[tokio::test]
+async fn a_reused_id_is_a_conflict_even_when_the_compared_columns_match() {
+    let app = require_db!();
+    let id = unique("sneaky");
+    let boss = format!("boss-{id}");
+
+    let original = run(&id, &boss, "kill", 42_000, HASH, "dedicated");
+    let (status, _) = call(app.clone(), submit(original.clone(), Some(TOKEN))).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Outcome, duration, content hash, authority and overreach are all identical.
+    // Everything else is different.
+    let mut disguised = original.clone();
+    disguised["boss"] = json!(format!("{boss}-elsewhere"));
+    disguised["engine"] = json!("4.9.9");
+    disguised["players"][0]["damage_done"] = json!(999_999);
+    disguised["players"][0]["peer"] = json!(4242);
+
+    let (status, _) = call(app.clone(), submit(disguised, Some(TOKEN))).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a different run reusing an id is not a retry"
+    );
+
+    let request = Request::builder()
+        .uri(format!("/v1/runs/{id}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let (_, body) = call(app, request).await;
+    assert_eq!(
+        body["run"]["boss"], boss,
+        "the stored run must be untouched"
+    );
+    assert_eq!(body["players"][0]["damage_done"], 100);
 }
 
 #[tokio::test]

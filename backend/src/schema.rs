@@ -18,6 +18,7 @@ diesel::table! {
         content_hash -> Text,
         engine -> Text,
         authority -> Text,
+        submission_digest -> Text,
         rankable -> Bool,
         unrankable_reason -> Nullable<Text>,
         worst_overreach_cm -> Int8,

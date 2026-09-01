@@ -176,10 +176,19 @@ public static class Combatants
     /// Whatever the cursor is over, for abilities aimed at a person rather than a
     /// place.
     ///
+    /// USES THE VISIBLE POSITION, NOT CombatPosition, and the distinction is the
+    /// whole correctness of this function. CombatPosition is the server's validated
+    /// copy and it is only ever advanced on the server -- on a client it sits at
+    /// the spawn point forever. Picking with it meant the ring appeared where
+    /// people STARTED rather than where they are, and a Verdant could not target a
+    /// moving ally at all.
+    ///
+    /// So: the client picks by what the player can see, and the server validates
+    /// that choice against its own copy. Neither is a substitute for the other.
+    ///
     /// Nearest-to-the-ground-point rather than a physics pick, deliberately: the
     /// boss has no collision body at all, and a pick radius degrades into "roughly
-    /// where you meant" instead of failing outright. The client resolving this is a
-    /// convenience; the server validates the answer independently.
+    /// where you meant" instead of failing outright.
     /// </summary>
     public static ICombatant UnderCursor(Node context, Vector3 groundPoint, ICombatant caster,
                                          TargetFilter filter, float pickRadius = 2.5f)
@@ -192,7 +201,9 @@ public static class Combatants
             if (node is not ICombatant candidate || !candidate.IsAlive) continue;
             if (caster is not null && !Matches(candidate, caster, filter)) continue;
 
-            Vector3 offset = candidate.CombatPosition - groundPoint;
+            if (candidate.Node is null || !GodotObject.IsInstanceValid(candidate.Node)) continue;
+
+            Vector3 offset = candidate.Node.GlobalPosition - groundPoint;
             offset.Y = 0f;
 
             float distance = offset.LengthSquared();

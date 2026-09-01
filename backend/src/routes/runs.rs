@@ -40,6 +40,8 @@ pub async fn submit(
         .unwrap_or("unknown")
         .to_string();
 
+    let digest = domain::digest(&submission);
+
     let run = NewRun {
         id: submission.run_id.clone(),
         boss: submission.boss.clone(),
@@ -48,6 +50,7 @@ pub async fn submit(
         content_hash: submission.content_hash.clone(),
         engine: submission.engine.clone(),
         authority: submission.authority.clone(),
+        submission_digest: digest.clone(),
         rankable: verdict.rankable,
         unrankable_reason: verdict.reason.map(str::to_string),
         worst_overreach_cm: submission.worst_overreach_cm,
@@ -116,12 +119,9 @@ pub async fn submit(
             .optional()?
             .ok_or_else(|| AppError::Internal("run vanished between insert and read".into()))?;
 
-        if stored.outcome != submission.outcome
-            || stored.duration_ms != submission.duration_ms
-            || stored.content_hash != submission.content_hash
-            || stored.authority != submission.authority
-            || stored.worst_overreach_cm != submission.worst_overreach_cm
-        {
+        // One comparison over everything the submitter said, rather than a list of
+        // columns somebody has to remember to extend.
+        if stored.submission_digest != digest {
             return Err(AppError::Conflict(format!(
                 "run {} already exists with different contents",
                 submission.run_id

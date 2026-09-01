@@ -17,6 +17,10 @@ CREATE TABLE runs (
     engine             TEXT NOT NULL,
     authority          TEXT NOT NULL,
 
+    -- A fingerprint of the whole submission. Comparing a few columns let a
+    -- different run reusing an id pass as a retry.
+    submission_digest  TEXT NOT NULL DEFAULT '',
+
     -- The backend's conclusion, never the submitter's claim.
     rankable           BOOLEAN NOT NULL,
     unrankable_reason  TEXT,

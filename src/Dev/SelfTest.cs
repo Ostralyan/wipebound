@@ -2,6 +2,7 @@ using Godot;
 using System.Collections.Generic;
 using Wipebound.Combat;
 using Wipebound.Combat.Commands;
+using Wipebound.Session;
 
 namespace Wipebound.Dev;
 
@@ -43,6 +44,7 @@ public static class SelfTest
         CastQueueing();
         Hazards();
         Classes();
+        Submission();
         CommandPayloads();
         SpawnAllocation();
 
@@ -872,6 +874,42 @@ public static class SelfTest
         }
 
         Check(foundHeal, "the Verdant actually heals somebody");
+    }
+
+    // -- submitting runs -------------------------------------------------
+
+    private static void Submission()
+    {
+        // A judgement about the payload never changes, so retrying one forever
+        // would block every run behind it.
+        Check(!SubmissionPolicy.ShouldRetry(400), "a malformed run is not retried");
+        Check(!SubmissionPolicy.ShouldRetry(409), "a conflicting run is not retried");
+        Check(!SubmissionPolicy.ShouldRetry(422), "a rejected run is not retried");
+        Check(!SubmissionPolicy.ShouldRetry(201), "an accepted run is not retried");
+
+        // These all leave hope.
+        Check(SubmissionPolicy.ShouldRetry(500), "a server fault is retried");
+        Check(SubmissionPolicy.ShouldRetry(503), "an unavailable backend is retried");
+        Check(SubmissionPolicy.ShouldRetry(408), "a timeout is retried");
+        Check(SubmissionPolicy.ShouldRetry(429), "rate limiting is retried");
+
+        // A wrong token is somebody's configuration mistake. Discarding every run
+        // played before they noticed would be the wrong way to report it.
+        Check(SubmissionPolicy.ShouldRetry(401), "a bad credential is retried, not thrown away");
+        Check(SubmissionPolicy.ShouldRetry(403), "a forbidden credential is retried too");
+
+        // Backoff has to actually grow. It did not: the attempt counter was reset
+        // on every dequeue, so "exponential" was a flat two seconds forever.
+        Near((float)SubmissionPolicy.BackoffFor(1), 2f, "the first retry is prompt");
+        Near((float)SubmissionPolicy.BackoffFor(2), 4f, "the second waits longer");
+        Near((float)SubmissionPolicy.BackoffFor(3), 8f, "and it keeps doubling");
+
+        for (int attempt = 1; attempt < 8; attempt++)
+            Check(SubmissionPolicy.BackoffFor(attempt + 1) >= SubmissionPolicy.BackoffFor(attempt),
+                  $"backoff never shrinks between attempts {attempt} and {attempt + 1}");
+
+        Near((float)SubmissionPolicy.BackoffFor(99), (float)SubmissionPolicy.MaxBackoffSeconds,
+             "and is capped so it stays plausible");
     }
 
     // -- command payloads ------------------------------------------------

@@ -5,6 +5,7 @@
 //! plumbing, which is exactly the part worth pinning down.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const SUPPORTED_SCHEMA: i32 = 1;
 pub const MAX_PLAYERS: usize = 8;
@@ -36,6 +37,53 @@ pub struct RunSubmission {
     pub authority: String,
     pub worst_overreach_cm: i64,
     pub players: Vec<PlayerLine>,
+}
+
+/// <summary>
+/// A fingerprint of the WHOLE submission, so a duplicate id can be told from a
+/// retry.
+///
+/// Comparing a handful of columns was not enough: a submission reusing an id with
+/// a different boss, engine, submitting server and player metrics matched on all
+/// five fields that were checked and was accepted as a retry. Everything the
+/// submitter said now goes into one value, so "same run" means the same run.
+///
+/// Players are sorted, because the roster is a set and two orderings of it are the
+/// same submission. Fields are separated by a byte that cannot appear in them, so
+/// no two different submissions can serialise to the same bytes by accident.
+/// </summary>
+pub fn digest(submission: &RunSubmission) -> String {
+    const SEPARATOR: [u8; 1] = [0x1f];
+
+    let mut hasher = Sha256::new();
+
+    let field = |value: &str, hasher: &mut Sha256| {
+        hasher.update(value.as_bytes());
+        hasher.update(SEPARATOR);
+    };
+
+    field(&submission.schema.to_string(), &mut hasher);
+    field(&submission.run_id, &mut hasher);
+    field(&submission.boss, &mut hasher);
+    field(&submission.outcome, &mut hasher);
+    field(&submission.duration_ms.to_string(), &mut hasher);
+    field(&submission.content_hash, &mut hasher);
+    field(&submission.engine, &mut hasher);
+    field(&submission.authority, &mut hasher);
+    field(&submission.worst_overreach_cm.to_string(), &mut hasher);
+
+    let mut roster = submission.players.clone();
+    roster.sort_by_key(|player| player.peer);
+
+    for player in &roster {
+        field(&player.peer.to_string(), &mut hasher);
+        field(&player.damage_done.to_string(), &mut hasher);
+        field(&player.healing_done.to_string(), &mut hasher);
+        field(&player.damage_taken.to_string(), &mut hasher);
+        field(&player.overreach_cm.to_string(), &mut hasher);
+    }
+
+    hex::encode(hasher.finalize())
 }
 
 /// Malformed or self-contradictory. Refused outright, nothing stored.
@@ -207,6 +255,51 @@ mod tests {
     }
 
     const ALLOWED_OVERREACH: i64 = 200;
+
+    #[test]
+    fn the_digest_covers_everything_the_submitter_said() {
+        let original = honest();
+        assert_eq!(
+            digest(&original),
+            digest(&honest()),
+            "the same run digests the same"
+        );
+
+        // Every one of these was invisible to the old five-field comparison.
+        let mut other_boss = honest();
+        other_boss.boss = "Something Else".into();
+        assert_ne!(digest(&original), digest(&other_boss));
+
+        let mut other_engine = honest();
+        other_engine.engine = "4.9.9".into();
+        assert_ne!(digest(&original), digest(&other_engine));
+
+        let mut other_damage = honest();
+        other_damage.players[0].damage_done += 1;
+        assert_ne!(digest(&original), digest(&other_damage));
+
+        let mut other_peer = honest();
+        other_peer.players[0].peer += 1;
+        assert_ne!(digest(&original), digest(&other_peer));
+
+        // The roster is a set: the same players in another order are the same run.
+        let mut two = honest();
+        two.players.push(PlayerLine {
+            peer: 5,
+            damage_done: 7,
+            healing_done: 0,
+            damage_taken: 0,
+            overreach_cm: 0,
+        });
+
+        let mut reversed = two.clone();
+        reversed.players.reverse();
+        assert_eq!(
+            digest(&two),
+            digest(&reversed),
+            "roster order is not identity"
+        );
+    }
 
     #[test]
     fn an_honest_clear_is_ranked() {

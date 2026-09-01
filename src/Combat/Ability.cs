@@ -101,6 +101,17 @@ public partial class Ability : Resource
     /// <summary>True when this ability is meaningless without somebody to aim at.</summary>
     public bool RequiresTarget => Origin == AbilityOrigin.AtTargetUnit;
 
+    /// <summary>
+    /// Whether a footprint is drawn on the ground.
+    ///
+    /// Never for an ability that follows a person: the telegraph would be frozen
+    /// where the target was at cast time while the ability resolves where they are
+    /// now, and a warning that lies about where it lands is worse than none. The
+    /// cast bar is the warning for those. Structural rather than a convention, so
+    /// the contradiction cannot be authored.
+    /// </summary>
+    public bool DrawsTelegraph => ShowTelegraph && !RequiresTarget;
+
     public TelegraphArea BuildArea(Vector3 casterPosition, Vector3 aimPoint)
     {
         float halfAngle = Mathf.DegToRad(ConeAngleDegrees) * 0.5f;
