@@ -1,10 +1,11 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="Script" path="res://src/World/Main.cs" id="1_main"]
 [ext_resource type="Script" path="res://src/Player/RtsCamera.cs" id="2_camera"]
 [ext_resource type="Script" path="res://src/Combat/Boss.cs" id="3_boss"]
 [ext_resource type="Script" path="res://src/UI/Lobby.cs" id="4_lobby"]
 [ext_resource type="Script" path="res://src/UI/EncounterHud.cs" id="5_hud"]
+[ext_resource type="Script" path="res://src/UI/TargetReticle.cs" id="6_reticle"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 sky_horizon_color = Color(0.28, 0.31, 0.36, 1)
@@ -31,6 +32,12 @@ size = Vector2(220, 220)
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_ground"]
 size = Vector3(220, 1, 220)
+
+[sub_resource type="TorusMesh" id="TorusMesh_reticle"]
+inner_radius = 0.75
+outer_radius = 0.95
+rings = 32
+ring_segments = 6
 
 [sub_resource type="CylinderMesh" id="CylinderMesh_boss"]
 top_radius = 1.5
@@ -114,6 +121,13 @@ outline_size = 10
 
 [node name="StatsSync" type="MultiplayerSynchronizer" parent="Boss"]
 replication_config = SubResource("SceneReplicationConfig_boss")
+
+[node name="TargetReticle" type="Node3D" parent="."]
+script = ExtResource("6_reticle")
+
+[node name="Ring" type="MeshInstance3D" parent="TargetReticle"]
+mesh = SubResource("TorusMesh_reticle")
+cast_shadow = 0
 
 [node name="RtsCamera" type="Node3D" parent="."]
 script = ExtResource("2_camera")

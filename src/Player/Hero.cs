@@ -27,16 +27,8 @@ public partial class Hero : CharacterBody3D, ICombatant
     /// Nothing legitimate is ever outside this, so claims beyond it are clamped.
     public const float ArenaRadius = 46f;
 
-    /// <summary>
-    /// How long the validator keeps billing at the OLD speed after a slow lands.
-    ///
-    /// Statuses are applied on the server and replicate afterwards, so for one
-    /// interval the server believes the hero is slowed while the client is still
-    /// legitimately running at full speed. Charging that gap made every Sunder cost
-    /// an honest player metres of overreach. Comfortably longer than the status
-    /// synchronizer's interval plus a round trip.
-    /// </summary>
-    public const double SpeedChangeGraceSeconds = 0.4;
+    /// Headroom on top of the measured replication delay, for jitter and a lost packet.
+    public const double SpeedChangeMargin = 0.15;
 
     /// How close a claim must land to a server-commanded destination to count as
     /// the client having acknowledged it.
@@ -152,6 +144,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     private static bool IsServer => NetworkManager.Instance.IsServer;
     private static double Now => NetClock.Instance.ServerTime;
 
+    private MultiplayerSynchronizer _statsSync;
     private NavigationAgent3D _agent;
     private Label3D _label;
     private MeshInstance3D _body;
@@ -203,6 +196,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         _serverCooldowns.Resize(Kit.Count);
         _clientCooldowns.Resize(Kit.Count);
 
+        _statsSync = GetNode<MultiplayerSynchronizer>("StatsSync");
         _agent = GetNode<NavigationAgent3D>("NavAgent");
         _label = GetNode<Label3D>("NameLabel");
         _body = GetNode<MeshInstance3D>("Body");
@@ -548,12 +542,31 @@ public partial class Hero : CharacterBody3D, ICombatant
             return current;
         }
 
-        if (_billingHoldUntil <= 0.0) _billingHoldUntil = now + SpeedChangeGraceSeconds;
+        if (_billingHoldUntil <= 0.0) _billingHoldUntil = now + SpeedChangeGrace();
         if (now < _billingHoldUntil) return _billingSpeed;
 
         _billingSpeed = current;
         _billingHoldUntil = 0.0;
         return current;
+    }
+
+    /// <summary>
+    /// How long to keep billing at the old speed after a slow lands.
+    ///
+    /// MEASURED, not guessed. A previous version hard-coded 0.4s, which happened to
+    /// cover a localhost round trip and would have started charging honest players
+    /// again the moment anybody played from another city. The client cannot know
+    /// about a slow until the status has been published (one synchronizer interval)
+    /// and has travelled (one round trip), so the grace is exactly those two things
+    /// plus headroom for jitter.
+    /// </summary>
+    private double SpeedChangeGrace()
+    {
+        double publish = _statsSync is null
+            ? 0.1
+            : Mathf.Max(_statsSync.ReplicationInterval, _statsSync.DeltaInterval);
+
+        return publish + NetClock.Instance.RttFor(PeerId) + SpeedChangeMargin;
     }
 
     private void UpdateAppearance()

@@ -61,6 +61,12 @@ public partial class NetClock : Node
     public bool Synced { get; private set; }
 
     /// <summary>
+    /// Measured round trip to one peer, or zero if it has not reported yet.
+    /// Server-side; clients have their own Rtt.
+    /// </summary>
+    public double RttFor(int peerId) => _peerRtt.TryGetValue(peerId, out double rtt) ? rtt : 0.0;
+
+    /// <summary>
     /// Worst round trip among connected clients, which is how long the server must
     /// wait past a telegraph's visual end before it is fair to resolve it.
     /// Server-side only; zero if nobody is connected.

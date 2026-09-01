@@ -200,19 +200,37 @@ public partial class Boss : Node3D, ICombatant
     /// the ability's AbilityOrigin, not this method's business -- which is why the
     /// old "a cone centred on the boss has nothing to aim at" special case is gone.
     /// </summary>
-    private Vector3 AimPointFor(Ability ability)
+    /// <summary>
+    /// Where the mechanic is aimed, and at whom.
+    ///
+    /// The target id matters for AtTargetUnit abilities, which follow a person
+    /// rather than landing on a place. Without it an NPC could not use that origin
+    /// at all, which would be a strange asymmetry in a system whose whole point is
+    /// that a boss mechanic and a player spell are the same object.
+    ///
+    /// Candidates come from the ability's own filter, so a boss ability aimed at
+    /// Allies picks its own minions -- or itself.
+    /// </summary>
+    private Vector3 AimPointFor(Ability ability, out int targetId)
     {
-        List<ICombatant> enemies = Combatants.Living(this, this, TargetFilter.Enemies);
-        if (enemies.Count == 0) return GlobalPosition;
+        targetId = 0;
 
-        return ability.AiTargeting switch
+        List<ICombatant> candidates = Combatants.Living(this, this, ability.Affects);
+        if (candidates.Count == 0) return GlobalPosition;
+
+        ICombatant chosen = ability.AiTargeting switch
         {
-            AiTargeting.ArenaCentre => Vector3.Zero,
-            AiTargeting.Self => GlobalPosition,
-            AiTargeting.NearestEnemy => Combatants.ByDistance(enemies, GlobalPosition, nearest: true).CombatPosition,
-            AiTargeting.FarthestEnemy => Combatants.ByDistance(enemies, GlobalPosition, nearest: false).CombatPosition,
-            _ => enemies[(int)(_rng.Randi() % (uint)enemies.Count)].CombatPosition,
+            AiTargeting.ArenaCentre => null,
+            AiTargeting.Self => this,
+            AiTargeting.NearestEnemy => Combatants.ByDistance(candidates, GlobalPosition, nearest: true),
+            AiTargeting.FarthestEnemy => Combatants.ByDistance(candidates, GlobalPosition, nearest: false),
+            _ => candidates[(int)(_rng.Randi() % (uint)candidates.Count)],
         };
+
+        if (chosen is null) return Vector3.Zero;
+
+        targetId = chosen.CombatId;
+        return chosen.CombatPosition;
     }
 
     // ---------------------------------------------------------------------
@@ -229,7 +247,8 @@ public partial class Boss : Node3D, ICombatant
         // does not eat the breathing room after it.
         _nextCastAt = now + ability.CastSeconds + (CurrentPhase?.RecoverySeconds ?? 2.0);
 
-        CombatDirector.Instance.Begin(this, ability, AimPointFor(ability));
+        Vector3 aim = AimPointFor(ability, out int targetId);
+        CombatDirector.Instance.Begin(this, ability, aim, targetId);
 
         GD.Print($"[boss] cast {ability.DisplayName} ({ability.Shape}) " +
                  $"telegraph={ability.CastSeconds:0.00}s");

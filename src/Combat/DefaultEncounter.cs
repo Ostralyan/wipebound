@@ -26,6 +26,8 @@ public static class DefaultEncounter
     private static readonly Color Danger = new("f04a34");
     private static readonly Color Soak = new("38bdf8");
     private static readonly Color Stack = new("fbbf24");
+    private static readonly Color Mending = new("86efac");
+    private static readonly Color Summoning = new("a78bfa");
 
     public static Array<BossPhase> Build()
     {
@@ -100,7 +102,11 @@ public static class DefaultEncounter
             AiTargeting = AiTargeting.ArenaCentre,
             Origin = AbilityOrigin.AtAimPoint,
             TelegraphColor = Danger,
-            Effects = new Array<AbilityEffect> { new DamageEffect { Amount = 42f } },
+            Effects = new Array<AbilityEffect>
+            {
+                new DamageEffect { Amount = 42f },
+                new ApplyStatusEffect { StatusId = StatusLibrary.Silenced },
+            },
         };
 
         var lance = new Ability
@@ -115,7 +121,11 @@ public static class DefaultEncounter
             AiTargeting = AiTargeting.RandomEnemy,
             Origin = AbilityOrigin.FromCasterTowardAim,
             TelegraphColor = Danger,
-            Effects = new Array<AbilityEffect> { new DamageEffect { Amount = 38f } },
+            Effects = new Array<AbilityEffect>
+            {
+                new DamageEffect { Amount = 38f },
+                new ApplyStatusEffect { StatusId = StatusLibrary.Sundered },
+            },
         };
 
         // Enough damage to kill anyone taking it alone, so the only answer is to
@@ -177,7 +187,11 @@ public static class DefaultEncounter
                         Duration = 14f, TickInterval = 0.75f,
                         Affects = TargetFilter.Enemies,
                         Tint = new Color("f97316"),
-                        OnTick = new Array<AbilityEffect> { new DamageEffect { Amount = 9f } },
+                        OnTick = new Array<AbilityEffect>
+                        {
+                            new DamageEffect { Amount = 9f },
+                            new ApplyStatusEffect { StatusId = StatusLibrary.Burning },
+                        },
                     },
                 },
             },
@@ -209,6 +223,79 @@ public static class DefaultEncounter
             },
         };
 
+        // A long cast the raid must answer. This is what Rebuke is FOR: without an
+        // interrupt in the group the boss simply heals, and the fight stops being
+        // winnable rather than getting slowly harder.
+        var knit = new Ability
+        {
+            Id = "knit", DisplayName = "Knit the Wound",
+            Shape = TelegraphShape.Circle, Origin = AbilityOrigin.AtCaster, Radius = 2.5f,
+            CastSeconds = 3.0f, Cooldown = 24f,
+            Affects = TargetFilter.Allies, AiTargeting = AiTargeting.Self,
+            TelegraphColor = Mending,
+            Effects = new Array<AbilityEffect> { new HealEffect { Amount = 420f } },
+        };
+
+        // Aimed at a PERSON rather than a place, so it follows them. The cast bar
+        // is the warning; there is no circle to step out of, because there is
+        // nowhere to step that helps.
+        var mark = new Ability
+        {
+            Id = "mark", DisplayName = "Mark of Ruin",
+            Shape = TelegraphShape.Circle, Origin = AbilityOrigin.AtTargetUnit,
+            Radius = 0.8f, Range = 40f,
+            CastSeconds = 1.4f, Cooldown = 13f,
+            Affects = TargetFilter.Enemies, AiTargeting = AiTargeting.NearestEnemy,
+            ShowTelegraph = false,
+            Effects = new Array<AbilityEffect>
+            {
+                new DamageEffect { Amount = 22f },
+                new ApplyStatusEffect { StatusId = StatusLibrary.Sundered },
+            },
+        };
+
+        // Adds that go for whoever is already hurt, so the group has to protect
+        // somebody instead of each dodging alone.
+        var choir = new Ability
+        {
+            Id = "choir", DisplayName = "Hollow Choir",
+            Shape = TelegraphShape.Circle, Radius = 5f,
+            CastSeconds = 2.2f, Cooldown = 30f,
+            AiTargeting = AiTargeting.ArenaCentre, Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = Summoning,
+            Effects = new Array<AbilityEffect>
+            {
+                new SummonEffect { Count = 2, Spread = 4f, Health = 70f, Targeting = TargetRule.LowestHealth },
+            },
+        };
+
+        // And adds that turn on whoever is bursting hardest, which is the other
+        // half of the same question: greed now, or safety now.
+        var riftlings = new Ability
+        {
+            Id = "riftlings", DisplayName = "Riftlings",
+            Shape = TelegraphShape.Circle, Radius = 6f,
+            CastSeconds = 2.0f, Cooldown = 28f,
+            AiTargeting = AiTargeting.ArenaCentre, Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = Summoning,
+            Effects = new Array<AbilityEffect>
+            {
+                new SummonEffect { Count = 3, Spread = 6f, Health = 60f, Targeting = TargetRule.HighestRecentDamage },
+            },
+        };
+
+        // Strips what the raid put on itself, so a shield is a decision about
+        // timing rather than something you leave running.
+        var unmake = new Ability
+        {
+            Id = "unmake", DisplayName = "Unmake",
+            Shape = TelegraphShape.Circle, Radius = 11f, Range = 30f,
+            CastSeconds = 1.8f, Cooldown = 22f,
+            AiTargeting = AiTargeting.RandomEnemy, Origin = AbilityOrigin.AtAimPoint,
+            TelegraphColor = new Color("c084fc"),
+            Effects = new Array<AbilityEffect> { new DispelEffect { Count = 2, StripBeneficial = true } },
+        };
+
         // Phases are read highest-threshold first. Later phases add mechanics and
         // shorten the gaps -- raising pressure by subtraction of rest, not by
         // inflating numbers.
@@ -219,21 +306,22 @@ public static class DefaultEncounter
                 Name = "Opening",
                 EntersAtHealthPercent = 100f,
                 RecoverySeconds = 2.4f,
-                Abilities = new Array<Ability> { crater, sunder, beacon },
+                Abilities = new Array<Ability> { crater, sunder, beacon, summon },
             },
             new BossPhase
             {
                 Name = "Fracture",
                 EntersAtHealthPercent = 60f,
                 RecoverySeconds = 1.8f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, summon },
+                Abilities = new Array<Ability> { crater, sunder, beacon, summon, collapse, lance, blight, cinders, knit, choir },
             },
             new BossPhase
             {
                 Name = "Wipebound",
                 EntersAtHealthPercent = 25f,
                 RecoverySeconds = 1.2f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, collapse, lance, blight, cinders, summon, convergence },
+                Abilities = new Array<Ability> { crater, sunder, beacon, summon, collapse, lance, blight, cinders, knit, choir,
+                                                 convergence, mark, riftlings, unmake },
             },
         };
     }

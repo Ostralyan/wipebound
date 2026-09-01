@@ -561,6 +561,29 @@ public static class SelfTest
         Near(carrier.HealthPool.Current, 960f, "the bomb detonates on expiry");
         Check(carrier.Status.Active.Count == 0, "the bomb is gone afterwards");
 
+        // A damage-over-time that KILLS its host clears the status list from inside
+        // the walk that is ticking it. Throwing there aborted the whole physics
+        // frame for that hero, and it only became reachable once the boss started
+        // setting people on fire often enough to finish one off.
+        StatusEffect lethal = Custom("test_lethal", d =>
+        {
+            d.Duration = 30f;
+            d.Beneficial = false;
+            d.TickInterval = 0.1f;
+            d.OnTick = new Godot.Collections.Array<AbilityEffect> { new DamageEffect { Amount = 10_000f } };
+        });
+
+        var doomed = new Dummy();
+        doomed.Status.Apply(lethal, null, 100.0);
+        doomed.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), null, 100.0);
+
+        bool threw = false;
+        try { doomed.Status.Tick(doomed, 101.0); }
+        catch (System.Exception) { threw = true; }
+
+        Check(!threw, "a lethal damage-over-time does not throw while ticking");
+        Check(!doomed.IsAlive, "and it does kill");
+
         // Removing it early is the entire point of removing it.
         var cleansed = new Dummy();
         cleansed.Status.Apply(bomb, null, 100.0);

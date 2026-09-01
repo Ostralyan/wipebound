@@ -200,10 +200,19 @@ public sealed class StatusTracker
     /// <summary>Server: run whatever ticks, then expire what is done.</summary>
     public void Tick(ICombatant owner, double now)
     {
-        foreach (ActiveStatus status in _active)
+        // Walk a SNAPSHOT. Resolving a tick runs arbitrary effects and they reach
+        // back in here: a damage-over-time that kills its host clears the whole
+        // list, and one that applies a status adds to it. Either mutation during a
+        // foreach throws, which is what a burning player dying used to do.
+        ActiveStatus[] ticking = _active.ToArray();
+
+        foreach (ActiveStatus status in ticking)
         {
             if (status.Definition.OnTick.Count == 0) continue;
             if (now < status.NextTickAt) continue;
+
+            // It may have been removed by an earlier tick in this same walk.
+            if (!_active.Contains(status)) continue;
 
             status.NextTickAt = now + Mathf.Max(0.05f, status.Definition.TickInterval);
             Run(owner, status, now, status.Definition.OnTick, status.Definition.TickRadius);
