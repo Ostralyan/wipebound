@@ -109,6 +109,57 @@ public static class DefaultEncounter
             },
         };
 
+        // A CHANNEL, not a cast. It does not go off -- it keeps going off, for
+        // seven seconds, while the aim turns underneath it. That makes the dodge
+        // different in kind from everything else the boss does: you cannot step
+        // out of it once and be finished, you either keep moving ahead of the
+        // sweep or you get behind it and let it pass.
+        //
+        // Interruptible the whole time, so a Warden's Rebuke is worth holding.
+        Ability Sweep(string id, string name, float degreesPerSecond) => new()
+        {
+            Id = id,
+            DisplayName = name,
+            Shape = TelegraphShape.Cone,
+            Origin = AbilityOrigin.FromCasterTowardAim,
+            Radius = 34f,
+            ConeAngleDegrees = 16f,
+
+            // The windup you get to read before it starts turning.
+            CastSeconds = 1.6f,
+            Cooldown = 34f,
+
+            ChannelSeconds = 7f,
+            ChannelTickInterval = 0.1f,
+            ChannelRotationDegrees = degreesPerSecond,
+
+            AiTargeting = AiTargeting.RandomEnemy,
+            TelegraphColor = Danger,
+            Effects = new Array<AbilityEffect>
+            {
+                new FireProjectileEffect
+                {
+                    Count = 2,
+                    SpreadDegrees = 10f,
+                    Definition = new Projectile
+                    {
+                        Id = "sweepshot",
+                        Speed = 24f,
+                        Radius = 0.85f,
+                        Range = 46f,
+                        Damage = 7f,
+                        Affects = TargetFilter.Enemies,
+                        Tint = new Color("fb923c"),
+                    },
+                },
+            },
+        };
+
+        // Both directions exist as content rather than a coin flip at runtime, so
+        // which way it turns is something you can read off the encounter.
+        var sweepRight = Sweep("sweep_cw", "Scattering Arc", 46f);
+        var sweepLeft = Sweep("sweep_ccw", "Scattering Arc", -46f);
+
         var lance = new Ability
         {
             Id = "lance",
@@ -306,14 +357,14 @@ public static class DefaultEncounter
                 Name = "Opening",
                 EntersAtHealthPercent = 100f,
                 RecoverySeconds = 2.4f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, summon },
+                Abilities = new Array<Ability> { crater, sunder, beacon, summon, sweepRight },
             },
             new BossPhase
             {
                 Name = "Fracture",
                 EntersAtHealthPercent = 60f,
                 RecoverySeconds = 1.8f,
-                Abilities = new Array<Ability> { crater, sunder, beacon, summon, collapse, lance, blight, cinders, knit, choir },
+                Abilities = new Array<Ability> { crater, sunder, beacon, summon, collapse, lance, blight, cinders, knit, choir, sweepRight },
             },
             new BossPhase
             {
@@ -321,7 +372,7 @@ public static class DefaultEncounter
                 EntersAtHealthPercent = 25f,
                 RecoverySeconds = 1.2f,
                 Abilities = new Array<Ability> { crater, sunder, beacon, summon, collapse, lance, blight, cinders, knit, choir,
-                                                 convergence, mark, riftlings, unmake },
+                                                 convergence, mark, riftlings, unmake, sweepRight, sweepLeft },
             },
         };
     }

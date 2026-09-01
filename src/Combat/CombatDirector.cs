@@ -20,6 +20,9 @@ public sealed class HazardInstance
 /// <summary>One cast in flight. Server-side; clients only ever see the telegraph.</summary>
 public sealed class CastInstance
 {
+    /// Flat, normalised, where this was aimed. A channel sweeps from here.
+    public Vector3 AimDirection;
+
     /// Identifies the client-side telegraph, so an interrupted cast can take its
     /// warning off the ground instead of letting it fill and flash as if it landed.
     public long Id { get; init; }
@@ -72,6 +75,11 @@ public partial class CombatDirector : Node
 
     private readonly CastQueue _casts = new();
     private readonly HazardField _hazards = new();
+    private readonly ChannelField _channels = new();
+    private readonly ProjectileField _projectiles = new();
+
+    /// Reused so a tick that finishes nothing allocates nothing.
+    private readonly List<ChannelInstance> _finished = new();
     private long _nextId = 1;
 
     /// Negative and unique, so a minion's statuses can be told apart from another's
@@ -120,7 +128,10 @@ public partial class CombatDirector : Node
                 combatant.OnEncounterReset();
     }
 
-    public bool IsCasting(ICombatant caster) => _casts.IsCasting(caster);
+    /// A channel counts. Otherwise an interrupt would sail straight past the one
+    /// kind of cast that is actually worth interrupting -- the long one.
+    public bool IsCasting(ICombatant caster)
+        => _casts.IsCasting(caster) || _channels.IsChannelling(caster);
 
     /// <summary>
     /// Drop whatever this caster had in flight. Interrupts and wipes both land here;
@@ -130,6 +141,14 @@ public partial class CombatDirector : Node
     public void CancelFor(ICombatant caster)
     {
         List<CastInstance> stopped = _casts.CancelFor(caster);
+
+        // Projectiles already in the air keep flying. Interrupting a channel stops
+        // the caster, not the world -- what is out there was already fired, and
+        // having it vanish would read as the game taking a hit back.
+        List<ChannelInstance> silenced = _channels.CancelFor(caster);
+        foreach (ChannelInstance channel in silenced)
+            if (CanBroadcast) Rpc(MethodName.EndTelegraphView, channel.Id);
+
         if (stopped.Count == 0) return;
 
         // Take the warnings off the ground too. A telegraph that keeps filling for a
@@ -153,11 +172,21 @@ public partial class CombatDirector : Node
     {
         _casts.CancelAll();
         _hazards.Clear();
+        _channels.Clear();
+        _projectiles.Clear();
         if (IsServer) ClearMinions();
 
         // A peer with nobody to talk to still has its own drawings to clear.
-        if (CanBroadcast) Rpc(MethodName.ClearTelegraphViews);
-        else TelegraphView.EndAll(this);
+        if (CanBroadcast)
+        {
+            Rpc(MethodName.ClearTelegraphViews);
+            Rpc(MethodName.ClearProjectileViews);
+        }
+        else
+        {
+            TelegraphView.EndAll(this);
+            ProjectileView.EndAll(this);
+        }
     }
 
         /// <summary>
@@ -217,6 +246,160 @@ public partial class CombatDirector : Node
         Rpc(MethodName.ShowHazard, id, area.ToDictionary(), now, now + definition.Duration, definition.Tint);
     }
 
+    /// <summary>
+    /// Start the sweep. Direction comes from where the cast was aimed, and turns
+    /// from there at a fixed rate for the length of the channel.
+    /// </summary>
+    private void BeginChannel(CastInstance cast, double now)
+    {
+        Ability ability = cast.Ability;
+
+        _channels.Add(new ChannelInstance
+        {
+            Id = cast.Id,
+            Ability = ability,
+            Owner = cast.Caster,
+            StartDirection = cast.AimDirection,
+            RotationRate = Mathf.DegToRad(ability.ChannelRotationDegrees),
+            StartAt = now,
+            EndsAt = now + ability.ChannelSeconds,
+            NextTickAt = now,
+        });
+
+        GD.Print($"[channel] {cast.Caster.CombatName} :: {ability.DisplayName} for {ability.ChannelSeconds}s " +
+                 $"at {ability.ChannelRotationDegrees} deg/s");
+    }
+
+    /// <summary>
+    /// Fire each channel that is due, pointing wherever it has turned to by now.
+    ///
+    /// The footprint is rebuilt every tick from a rotated aim POINT rather than by
+    /// poking a facing angle into the area, so this never has to agree with
+    /// TelegraphArea about which way zero radians points.
+    /// </summary>
+    private void TickChannels(double now)
+    {
+        _finished.Clear();
+
+        foreach (ChannelInstance channel in _channels.Advance(now, _finished))
+        {
+            Ability ability = channel.Ability;
+            ICombatant owner = channel.Owner;
+
+            // A caster that died or was freed mid-channel stops, exactly as a cast
+            // does. Without this a dead boss keeps spraying.
+            if (owner?.Node is null || !GodotObject.IsInstanceValid(owner.Node) || !owner.IsAlive)
+            {
+                channel.Cancelled = true;
+                continue;
+            }
+
+            Vector3 origin = owner.CombatPosition;
+            Vector3 direction = channel.DirectionAt(now);
+            Vector3 aimPoint = origin + direction * Mathf.Max(1f, ability.Radius);
+            TelegraphArea area = ability.BuildArea(origin, aimPoint);
+
+            List<ICombatant> candidates = Combatants.Living(this, owner, ability.Affects);
+            var targets = new List<ICombatant>();
+
+            // A channel may also have a footprint of its own -- a beam that burns
+            // what it sweeps over as well as firing. Costs nothing when it does not.
+            foreach (ICombatant candidate in candidates)
+                if (area.Field(candidate.CombatPosition) <= 0f)
+                    targets.Add(candidate);
+
+            var context = new EffectContext
+            {
+                AbilityName = ability.DisplayName,
+                Caster = owner,
+                Area = area,
+                AimDirection = direction,
+                Targets = targets,
+                Candidates = candidates,
+                Now = now,
+            };
+
+            foreach (AbilityEffect effect in ability.Effects) effect?.Resolve(context);
+        }
+    }
+
+    /// <summary>
+    /// Advance everything in the air and hurt whoever it reached.
+    ///
+    /// Damage is applied out here rather than inside the field's walk, because
+    /// damage kills and death reaches back into the world.
+    /// </summary>
+    private void TickProjectiles(double now)
+    {
+        if (_projectiles.Count == 0) return;
+
+        List<ProjectileHit> hits = _projectiles.Advance(
+            now, projectile => Combatants.Living(this, projectile.Owner, projectile.Definition.Affects));
+
+        foreach (ProjectileHit hit in hits)
+        {
+            Projectile definition = hit.Projectile.Definition;
+            hit.Target.ApplyDamage(definition.Damage, hit.Projectile.Owner, definition.Id);
+
+            // Same spirit as the resolve log: the server says who it believes was
+            // standing where, so "that one missed me" can be checked rather than
+            // argued about.
+            GD.Print($"[projectile] {definition.Id} hit {hit.Target.CombatName} at {Flat(hit.Target.CombatPosition)}");
+
+            if (CanBroadcast) Rpc(MethodName.EndProjectile, hit.Projectile.Id);
+            else ProjectileView.EndOne(this, hit.Projectile.Id);
+        }
+    }
+
+    /// <summary>
+    /// Put one projectile in the air. Server only.
+    ///
+    /// Clients are told once, at spawn, and compute the rest of the flight from
+    /// the shared clock -- so a stream costs one packet per projectile rather
+    /// than one per projectile per frame.
+    /// </summary>
+    public void FireProjectile(ICombatant owner, Projectile definition, Vector3 direction, double now)
+    {
+        if (!IsServer || definition is null || owner is null) return;
+
+        var flat = new Vector3(direction.X, 0f, direction.Z);
+        if (flat.LengthSquared() < 0.0001f) return;
+        flat = flat.Normalized();
+
+        long id = _nextId++;
+        Vector3 origin = owner.CombatPosition;
+        double expiresAt = now + definition.Lifetime;
+
+        _projectiles.Add(new ProjectileInstance
+        {
+            Id = id,
+            Definition = definition,
+            Owner = owner,
+            Origin = origin,
+            Direction = flat,
+            SpawnedAt = now,
+            ExpiresAt = expiresAt,
+        });
+
+        if (CanBroadcast)
+            Rpc(MethodName.ShowProjectile, id, origin, flat, definition.Speed,
+                definition.Radius, now, expiresAt, definition.Tint);
+        else
+            ProjectileView.Spawn(this, id, origin, flat, definition.Speed,
+                                 definition.Radius, now, expiresAt, definition.Tint);
+    }
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void ShowProjectile(long id, Vector3 origin, Vector3 direction, float speed,
+                                float radius, double spawnedAt, double expiresAt, Color tint)
+        => ProjectileView.Spawn(this, id, origin, direction, speed, radius, spawnedAt, expiresAt, tint);
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void EndProjectile(long id) => ProjectileView.EndOne(this, id);
+
+    [Rpc(MultiplayerApi.RpcMode.Authority, CallLocal = true)]
+    private void ClearProjectileViews() => ProjectileView.EndAll(this);
+
     private void TickHazards(double now)
     {
         foreach (HazardInstance hazard in _hazards.Advance(now))
@@ -274,6 +457,10 @@ public partial class CombatDirector : Node
 
         double now = Now;
         TelegraphArea area = ability.BuildArea(caster.CombatPosition, aimPoint);
+
+        var aimDirection = new Vector3(aimPoint.X - caster.CombatPosition.X, 0f,
+                                       aimPoint.Z - caster.CombatPosition.Z);
+        aimDirection = aimDirection.LengthSquared() > 0.0001f ? aimDirection.Normalized() : Vector3.Forward;
         double castEnd = now + ability.CastSeconds;
 
         var cast = new CastInstance
@@ -283,6 +470,7 @@ public partial class CombatDirector : Node
             TargetId = targetId,
             Caster = caster,
             Area = area,
+            AimDirection = aimDirection,
             StartAt = now,
             CastEndAt = castEnd,
             ResolveAt = castEnd + ComputeGrace(ability),
@@ -327,6 +515,8 @@ public partial class CombatDirector : Node
 
         double now = Now;
         TickHazards(now);
+        TickChannels(now);
+        TickProjectiles(now);
 
         _casts.Process(
             now,
@@ -339,6 +529,15 @@ public partial class CombatDirector : Node
     private void Resolve(CastInstance cast, double now)
     {
         Ability ability = cast.Ability;
+
+        // A channel does not resolve here. The telegraph that just filled was the
+        // WINDUP; what it earns is an interval, not a moment, so hand it to the
+        // channel field and let it tick.
+        if (ability.IsChannelled)
+        {
+            BeginChannel(cast, now);
+            return;
+        }
 
         if (!TryAreaAt(cast, out TelegraphArea area))
         {
@@ -369,6 +568,7 @@ public partial class CombatDirector : Node
             AbilityName = ability.DisplayName,
             Caster = cast.Caster,
             Area = area,
+            AimDirection = cast.AimDirection,
             Targets = targets,
             Candidates = candidates,
             Now = now,

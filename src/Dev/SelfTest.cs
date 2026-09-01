@@ -45,6 +45,7 @@ public static class SelfTest
         Hazards();
         Classes();
         DeadTargetsStayDead();
+        Channelling();
         KitShape();
         Controls();
         Submission();
@@ -254,7 +255,7 @@ public static class SelfTest
         public string CombatName { get; init; } = "dummy";
         public int CombatId { get; init; }
         public Team Team { get; init; } = Team.Players;
-        public Vector3 CombatPosition => Vector3.Zero;
+        public Vector3 CombatPosition { get; set; } = Vector3.Zero;
         public bool IsAlive => !HealthPool.IsEmpty;
         public ResourcePool HealthPool { get; } = new(1000f);
         public StatusTracker Status { get; } = new();
@@ -926,6 +927,112 @@ public static class SelfTest
         });
 
         Check(survivor.Status.Active.Count == 1, "somebody still standing still gets it");
+    }
+
+    /// <summary>
+    /// Channels and the things they fire.
+    ///
+    /// The property worth protecting is that a projectile's position is a
+    /// FUNCTION of the clock rather than an accumulated step. That is what lets
+    /// the server send one packet per projectile and have every client agree
+    /// about where it is, and it is what makes a dropped frame invisible instead
+    /// of a stutter.
+    /// </summary>
+    private static void Channelling()
+    {
+        var shot = new Projectile { Speed = 10f, Radius = 1f, Range = 50f, Damage = 5f };
+        Near((float)shot.Lifetime, 5f, "a projectile lives for range over speed");
+
+        var flying = new ProjectileInstance
+        {
+            Id = 1,
+            Definition = shot,
+            Origin = Vector3.Zero,
+            Direction = Vector3.Right,
+            SpawnedAt = 100.0,
+            ExpiresAt = 100.0 + shot.Lifetime,
+        };
+
+        Near(flying.PositionAt(102.0).X, 20f, "it is wherever the clock says it is");
+        Near(flying.PositionAt(102.0).X - flying.PositionAt(101.0).X, 10f, "moving at its own speed");
+        Near(flying.PositionAt(102.0).X, flying.PositionAt(102.0).X,
+             "and asking twice gives the same answer");
+
+        // Spent on contact rather than sweeping through a line of people, which is
+        // what makes standing in front of somebody a real defence.
+        var field = new ProjectileField();
+        var standing = new Dummy { CombatId = 3, CombatName = "standing", CombatPosition = new Vector3(20f, 0f, 0f) };
+        var behind = new Dummy { CombatId = 4, CombatName = "behind", CombatPosition = new Vector3(20.5f, 0f, 0f) };
+        var candidates = new List<ICombatant> { standing, behind };
+
+        field.Add(flying);
+        List<ProjectileHit> hits = field.Advance(102.0, _ => candidates);
+        Check(hits.Count == 1, "a projectile hits one thing, not everything it overlaps");
+        Check(ReferenceEquals(hits[0].Target, standing), "and it is the one it actually reached");
+
+        Check(field.Advance(102.05, _ => candidates).Count == 0, "a spent projectile hits nothing more");
+        Check(field.Count == 0, "and is swept away afterwards, not during");
+
+        // Out of range with nobody in the way.
+        var missing = new ProjectileField();
+        missing.Add(new ProjectileInstance
+        {
+            Id = 2, Definition = shot, Origin = Vector3.Zero, Direction = Vector3.Right,
+            SpawnedAt = 0.0, ExpiresAt = shot.Lifetime,
+        });
+        Check(missing.Advance(99.0, _ => candidates).Count == 0, "a projectile past its range hits nobody");
+        Check(missing.Count == 0, "and stops existing");
+
+        // -- the sweep itself --------------------------------------------
+        var sweep = new Ability
+        {
+            Id = "sweep", DisplayName = "Sweep",
+            Shape = TelegraphShape.Cone, Origin = AbilityOrigin.FromCasterTowardAim,
+            Radius = 20f, ConeAngleDegrees = 20f,
+            ChannelSeconds = 4f, ChannelTickInterval = 0.5f, ChannelRotationDegrees = 90f,
+        };
+
+        Check(sweep.IsChannelled, "a positive channel length makes it a channel");
+        Check(!new Ability().IsChannelled, "and an ordinary ability is not one");
+
+        var channel = new ChannelInstance
+        {
+            Id = 1, Ability = sweep,
+            StartDirection = Vector3.Forward,
+            RotationRate = Mathf.DegToRad(sweep.ChannelRotationDegrees),
+            StartAt = 0.0, EndsAt = 4.0, NextTickAt = 0.0,
+        };
+
+        // Computed from elapsed time, so it cannot drift with the frame rate.
+        Near(Mathf.RadToDeg(Vector3.Forward.AngleTo(channel.DirectionAt(1.0))), 90f,
+             "a sweep turns at the rate it says", 0.01f);
+        Near(Mathf.RadToDeg(Vector3.Forward.AngleTo(channel.DirectionAt(2.0))), 180f,
+             "and keeps turning", 0.01f);
+
+        var channels = new ChannelField();
+        var finished = new List<ChannelInstance>();
+        channels.Add(channel);
+
+        Check(channels.Advance(0.0, finished).Count == 1, "a channel fires on its first tick");
+        Check(channels.Advance(0.1, finished).Count == 0, "and not again before its interval elapses");
+        Check(channels.Advance(0.6, finished).Count == 1, "and again once it has");
+        Check(channels.Advance(5.0, finished).Count == 0, "and nothing after it ends");
+        Check(finished.Count == 1 && channels.Count == 0, "reporting it finished and leaving nothing behind");
+
+        // Interruptible, which is what makes holding a Rebuke worth it.
+        var victim = new Dummy { CombatId = 7, CombatName = "caster" };
+        var live = new ChannelField();
+        live.Add(new ChannelInstance
+        {
+            Id = 2, Ability = sweep, Owner = victim,
+            StartDirection = Vector3.Forward, StartAt = 0.0, EndsAt = 10.0, NextTickAt = 0.0,
+        });
+
+        Check(live.IsChannelling(victim), "a channelling caster reports as busy");
+        Check(live.CancelFor(victim).Count == 1, "and can be interrupted");
+        Check(!live.IsChannelling(victim), "after which it is not channelling");
+        live.Advance(0.1, finished);
+        Check(live.Count == 0, "and the cancelled channel is gone");
     }
 
     // -- the shape of a kit ----------------------------------------------

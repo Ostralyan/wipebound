@@ -121,6 +121,25 @@ public partial class Ability : Resource
     [Export] public bool ShowTelegraph { get; set; } = true;
     [Export] public Color TelegraphColor { get; set; } = new(0.95f, 0.32f, 0.26f);
 
+    [ExportGroup("Channel")]
+
+    /// <summary>
+    /// Longer than zero turns this from a cast into a channel: instead of
+    /// resolving once when the telegraph fills, it resolves on a tick for this
+    /// many seconds. Interruptible the whole time.
+    /// </summary>
+    [Export] public float ChannelSeconds { get; set; }
+
+    [Export] public float ChannelTickInterval { get; set; } = 0.08f;
+
+    /// <summary>
+    /// Degrees per second the aim sweeps while channelling. Signed -- negative
+    /// turns the other way. Zero is a fixed stream.
+    /// </summary>
+    [Export] public float ChannelRotationDegrees { get; set; }
+
+    public bool IsChannelled => ChannelSeconds > 0f;
+
     [ExportGroup("Consequences")]
     [Export] public Godot.Collections.Array<AbilityEffect> Effects { get; set; } = new();
 

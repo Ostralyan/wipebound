@@ -18,6 +18,15 @@ public sealed class EffectContext
     /// Server-clock time of this resolution. Statuses need it to date their expiry.
     public double Now { get; init; }
 
+    /// <summary>
+    /// Flat, normalised, and where the ability is POINTING -- which is not the
+    /// same question as where it lands. A circle at a cursor has a footprint but
+    /// no direction; a projectile has a direction but no footprint. Carried
+    /// explicitly rather than recovered from the area's facing, so an effect
+    /// never has to guess which convention a shape used.
+    /// </summary>
+    public Vector3 AimDirection { get; init; }
+
     /// Living, affectable combatants whose server position fell inside the area.
     public required IReadOnlyList<ICombatant> Targets { get; init; }
 
