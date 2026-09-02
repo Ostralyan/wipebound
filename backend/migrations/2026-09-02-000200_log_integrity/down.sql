@@ -1,0 +1,1 @@
+ALTER TABLE run_logs DROP COLUMN IF EXISTS log_digest;

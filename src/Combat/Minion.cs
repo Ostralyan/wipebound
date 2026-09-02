@@ -169,7 +169,7 @@ public partial class Minion : CharacterBody3D, ICombatant
         List<ICombatant> prey = Combatants.Living(this, this, TargetFilter.Enemies);
         if (prey.Count == 0)
         {
-            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId);
+            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId, now);
             _fixation = null;
             return null;
         }
@@ -186,7 +186,7 @@ public partial class Minion : CharacterBody3D, ICombatant
             // Release the previous victim explicitly. The marker used to linger for
             // its whole duration after a rotation, which left other minions avoiding
             // somebody nothing was chasing any more.
-            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId);
+            _fixation?.Status.Remove(StatusLibrary.Hunted, CombatId, now);
 
             _fixation = chosen;
             _fixateUntil = now + FixateSeconds;

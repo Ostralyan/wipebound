@@ -36,6 +36,39 @@ pub struct AppState {
 
 /// The whole HTTP surface, with no listener attached, so integration tests can
 /// drive exactly what production serves rather than an approximation of it.
+/// Defence in depth behind the escaping, not instead of it.
+///
+/// 'none' by default and no inline script, so markup that survives a mistake in
+/// the escaping still cannot execute. The page's script is a separate file for
+/// exactly this reason: inline would have needed 'unsafe-inline', which also
+/// permits the onload= handler an injected name would carry, leaving the header
+/// decorative.
+const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; \
+                      connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'";
+
+async fn page() -> impl axum::response::IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_SECURITY_POLICY, POLICY),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        axum::response::Html(include_str!("../web/index.html")),
+    )
+}
+
+async fn script() -> impl axum::response::IntoResponse {
+    (
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/javascript; charset=utf-8",
+            ),
+            (axum::http::header::CONTENT_SECURITY_POLICY, POLICY),
+        ],
+        include_str!("../web/app.js"),
+    )
+}
+
 pub fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/leaderboards/{boss}", get(routes::leaderboard::top))
@@ -61,10 +94,8 @@ pub fn router(state: AppState) -> Router {
         // The site itself. One file, no build step, and served from the same
         // process as the API it reads -- a log viewer that needs its own
         // deployment is a log viewer that drifts out of step with the schema.
-        .route(
-            "/",
-            get(|| async { axum::response::Html(include_str!("../web/index.html")) }),
-        )
+        .route("/", get(page))
+        .route("/app.js", get(script))
         .nest("/v1", public)
         .nest("/v1/internal", internal)
         .layer(TraceLayer::new_for_http())

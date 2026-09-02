@@ -45,6 +45,13 @@ pub struct Actor {
 #[derive(Debug, Deserialize)]
 pub struct Document {
     pub format: i32,
+
+    /// Which run this is evidence for. Present in the document all along and
+    /// never read, so the backend attached whatever arrived to whatever run the
+    /// path named.
+    pub run_id: String,
+    pub boss: String,
+
     pub duration_ms: i64,
     #[serde(default)]
     pub truncated: bool,
@@ -107,6 +114,8 @@ pub enum LogError {
     UnsupportedFormat(i32),
     #[error("combat log is for a different run")]
     WrongRun,
+    #[error("combat log describes a different fight: {0}")]
+    Disagrees(String),
 }
 
 /// The format this backend can read. Bumped with the game's CombatLog.FormatVersion.
@@ -116,6 +125,64 @@ pub enum LogError {
 /// half-understood. Logs already stored stay readable: they are served back as
 /// the bytes they arrived as, and the site sizes its stride from the document.
 pub const SUPPORTED_FORMAT: i32 = 2;
+
+/// <summary>
+/// Whether this document is evidence for THIS run.
+///
+/// The upload is authenticated, which says the sender is a game server we know.
+/// It says nothing about whether the document describes the run in the path, and
+/// without this a server could attach any fight to any run and rewrite its
+/// meters and everybody's history.
+/// </summary>
+pub fn belongs_to(
+    document: &Document,
+    run_id: &str,
+    boss: &str,
+    duration_ms: i64,
+    roster: &[i64],
+) -> Result<(), LogError> {
+    if document.run_id != run_id {
+        return Err(LogError::WrongRun);
+    }
+
+    if document.boss != boss {
+        return Err(LogError::Disagrees(format!(
+            "boss is {:?}, run says {boss:?}",
+            document.boss
+        )));
+    }
+
+    // The log stops when the attempt is recorded and the summary is written from
+    // the same moment, so these agree to within a tick rather than exactly.
+    if (document.duration_ms - duration_ms).abs() > 2_000 {
+        return Err(LogError::Disagrees(format!(
+            "lasted {}ms, run says {duration_ms}ms",
+            document.duration_ms
+        )));
+    }
+
+    // Same people. Compared as a set of ids rather than by totals: per-event
+    // rounding means the sums legitimately differ by a little, and a roster
+    // cannot differ by a little.
+    let mut logged: Vec<i64> = document
+        .actors
+        .iter()
+        .filter(|actor| actor.kind == "hero")
+        .map(|actor| actor.id)
+        .collect();
+
+    let mut expected = roster.to_vec();
+    logged.sort_unstable();
+    expected.sort_unstable();
+
+    if logged != expected {
+        return Err(LogError::Disagrees(format!(
+            "roster is {logged:?}, run says {expected:?}"
+        )));
+    }
+
+    Ok(())
+}
 
 pub fn parse(json: &[u8]) -> Result<Document, LogError> {
     let document: Document =
@@ -325,6 +392,8 @@ mod tests {
         serde_json::from_str(
             r#"{
               "format": 2,
+              "run_id": "b8bd26e9aa2e8e42964fba0e43d50867",
+              "boss": "The Wipebringer",
               "duration_ms": 20000,
               "truncated": false,
               "actors": [
@@ -352,15 +421,85 @@ mod tests {
 
     #[test]
     fn a_wrong_format_is_refused_rather_than_half_read() {
-        let bad = br#"{"format":99,"duration_ms":0,"actors":[],"names":[],"events":[]}"#;
+        let bad = br#"{"format":99,"run_id":"x","boss":"b","duration_ms":0,"actors":[],"names":[],"events":[]}"#;
         assert!(matches!(parse(bad), Err(LogError::UnsupportedFormat(99))));
         assert!(matches!(parse(b"not json"), Err(LogError::Unreadable(_))));
 
         // Specifically the previous version. Its lanes are four wide where these
         // are five, so reading one as the other would put a health bar where the
         // mana bar goes rather than failing.
-        let old = br#"{"format":1,"duration_ms":0,"actors":[],"abilities":[],"events":[]}"#;
+        let old = br#"{"format":1,"run_id":"x","boss":"b","duration_ms":0,"actors":[],"abilities":[],"events":[]}"#;
         assert!(matches!(parse(old), Err(LogError::UnsupportedFormat(1))));
+    }
+
+    #[test]
+    fn a_log_must_say_which_run_it_is_evidence_for() {
+        let doc = document();
+        let roster = vec![11];
+
+        assert_eq!(
+            belongs_to(
+                &doc,
+                "b8bd26e9aa2e8e42964fba0e43d50867",
+                "The Wipebringer",
+                20_000,
+                &roster
+            ),
+            Ok(())
+        );
+
+        // The document names its own run. Without checking it, an authenticated
+        // server could attach any fight to any run and rewrite its meters.
+        assert_eq!(
+            belongs_to(&doc, "some-other-run", "The Wipebringer", 20_000, &roster),
+            Err(LogError::WrongRun)
+        );
+
+        assert!(matches!(
+            belongs_to(
+                &doc,
+                "b8bd26e9aa2e8e42964fba0e43d50867",
+                "Somebody Else",
+                20_000,
+                &roster
+            ),
+            Err(LogError::Disagrees(_))
+        ));
+
+        // Duration agrees to within a tick, because the log stops and the
+        // summary is written at very nearly the same moment.
+        assert!(belongs_to(
+            &doc,
+            "b8bd26e9aa2e8e42964fba0e43d50867",
+            "The Wipebringer",
+            20_900,
+            &roster
+        )
+        .is_ok());
+        assert!(matches!(
+            belongs_to(
+                &doc,
+                "b8bd26e9aa2e8e42964fba0e43d50867",
+                "The Wipebringer",
+                90_000,
+                &roster
+            ),
+            Err(LogError::Disagrees(_))
+        ));
+
+        // Same fight, different people, is a different fight. Compared as a set
+        // of ids rather than by totals, which round per event and so differ by a
+        // little quite legitimately.
+        assert!(matches!(
+            belongs_to(
+                &doc,
+                "b8bd26e9aa2e8e42964fba0e43d50867",
+                "The Wipebringer",
+                20_000,
+                &[11, 12]
+            ),
+            Err(LogError::Disagrees(_))
+        ));
     }
 
     #[test]

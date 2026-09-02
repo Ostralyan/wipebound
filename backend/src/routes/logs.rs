@@ -13,8 +13,8 @@ use std::io::Read;
 use crate::{
     error::AppError,
     logbook,
-    models::{NewAbilityStat, NewPlayerStat, NewRunLog},
-    schema::{run_ability_stats, run_logs, run_player_stats, runs},
+    models::{NewAbilityStat, NewPlayerStat, NewRunLog, RunRow},
+    schema::{run_ability_stats, run_logs, run_player_stats, run_players, runs},
     AppState,
 };
 
@@ -50,29 +50,78 @@ pub async fn upload(
     };
 
     let document = logbook::parse(&json).map_err(|error| AppError::Invalid(error.to_string()))?;
-    let derived = logbook::derive(&document);
+
+    // Of the DOCUMENT, not the stored bytes. gzip is not deterministic, so two
+    // honest uploads of one log can compress differently and must still be
+    // recognised as the same evidence.
+    let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&json));
 
     let mut conn = state.pool.get().await?;
 
     // The run has to exist first. A log for a run nobody submitted is either a
     // bug or somebody probing, and either way there is nothing to attach it to.
-    let known: i64 = runs::table
-        .filter(runs::id.eq(&id))
-        .count()
-        .get_result(&mut conn)
+    let run: RunRow = runs::table
+        .find(&id)
+        .select(RunRow::as_select())
+        .first(&mut conn)
+        .await
+        .optional()?
+        .ok_or(AppError::NotFound)?;
+
+    let roster: Vec<i64> = run_players::table
+        .filter(run_players::run_id.eq(&id))
+        .select(run_players::peer)
+        .load(&mut conn)
         .await?;
 
-    if known == 0 {
-        return Err(AppError::NotFound);
+    // Authentication says the sender is a game server we know. It says nothing
+    // about whether this document describes THIS run, and without that a server
+    // could attach any fight to any run and rewrite its meters.
+    logbook::belongs_to(&document, &id, &run.boss, run.duration_ms, &roster)
+        .map_err(|error| AppError::Invalid(error.to_string()))?;
+
+    // Evidence is not rewritable. An identical retry is a retry; different bytes
+    // for a run that already has one are a conflict, exactly as they are for the
+    // run record itself.
+    let stored: Option<String> = run_logs::table
+        .filter(run_logs::run_id.eq(&id))
+        .select(run_logs::log_digest)
+        .first(&mut conn)
+        .await
+        .optional()?;
+
+    if let Some(existing) = stored {
+        if existing == digest {
+            return Ok((
+                StatusCode::OK,
+                Json(json!({ "run_id": id, "duplicate": true })),
+            ));
+        }
+
+        return Err(AppError::Conflict(
+            "this run already has a different combat log".into(),
+        ));
     }
+
+    let derived = logbook::derive(&document);
+
+    // Always stored gzipped, so the download's Content-Encoding is always true.
+    // A plain-JSON upload used to be stored raw and served with a gzip header,
+    // which no browser could read.
+    let stored_body = if gzipped {
+        body.to_vec()
+    } else {
+        deflate(&json)?
+    };
 
     let log = NewRunLog {
         run_id: id.clone(),
         format: derived.format,
-        body: body.to_vec(),
-        byte_size: body.len() as i64,
+        byte_size: stored_body.len() as i64,
+        body: stored_body,
         events: derived.events,
         truncated: derived.truncated,
+        log_digest: digest,
     };
 
     let players: Vec<NewPlayerStat> = derived
@@ -113,7 +162,6 @@ pub async fn upload(
         })
         .collect();
 
-    let stored = id.clone();
     let summary = json!({
         "run_id": id,
         "events": derived.events,
@@ -125,16 +173,10 @@ pub async fn upload(
     // server retrying after a timeout must not leave two half-attached logs.
     conn.transaction::<_, diesel::result::Error, _>(|conn| {
         async move {
-            diesel::delete(run_logs::table.filter(run_logs::run_id.eq(&stored)))
-                .execute(conn)
-                .await?;
-            diesel::delete(run_player_stats::table.filter(run_player_stats::run_id.eq(&stored)))
-                .execute(conn)
-                .await?;
-            diesel::delete(run_ability_stats::table.filter(run_ability_stats::run_id.eq(&stored)))
-                .execute(conn)
-                .await?;
-
+            // Nothing is deleted here any more. A run that already has a log
+            // returned above -- as a retry or as a conflict -- so reaching this
+            // point means there is nothing to replace, and evidence that could
+            // be replaced was not evidence.
             diesel::insert_into(run_logs::table)
                 .values(&log)
                 .execute(conn)
@@ -188,6 +230,18 @@ pub async fn download(
         ],
         body,
     ))
+}
+
+/// Compress an upload that arrived as plain JSON, so everything in the table is
+/// gzip and the download never lies about its encoding.
+fn deflate(json: &[u8]) -> Result<Vec<u8>, AppError> {
+    use std::io::Write;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(json)
+        .and_then(|()| encoder.finish())
+        .map_err(|error| AppError::Internal(format!("could not compress combat log: {error}")))
 }
 
 /// Bounded, because a gzip bomb is a few kilobytes that becomes a few gigabytes.

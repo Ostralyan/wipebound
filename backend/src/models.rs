@@ -78,6 +78,11 @@ pub struct NewRunLog {
     pub byte_size: i64,
     pub events: i32,
     pub truncated: bool,
+
+    /// Of the DECOMPRESSED document, not the stored bytes: gzip is not
+    /// deterministic, so two honest uploads of one log can compress differently
+    /// and must still be recognised as the same evidence.
+    pub log_digest: String,
 }
 
 #[derive(Debug, Insertable)]

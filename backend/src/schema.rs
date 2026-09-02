@@ -54,6 +54,7 @@ diesel::table! {
         events -> Int4,
         truncated -> Bool,
         created_at -> Timestamptz,
+        log_digest -> Text,
     }
 }
 

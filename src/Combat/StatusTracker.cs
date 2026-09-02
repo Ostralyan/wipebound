@@ -167,15 +167,34 @@ public sealed class StatusTracker
         Note(applied: true, Find(definition.Id, definition.Scope == StatusScope.PerSource ? sourceId : null), now);
     }
 
-    public void Remove(string id)
-    {
-        if (_active.RemoveAll(status => status.Definition.Id == id) > 0) Rebuild();
-    }
+    public void Remove(string id, double now) => Remove(now, status => status.Definition.Id == id);
 
     /// <summary>Remove only the instance one particular caster applied.</summary>
-    public void Remove(string id, int sourceId)
+    public void Remove(string id, int sourceId, double now)
+        => Remove(now, status => status.Definition.Id == id && status.SourceId == sourceId);
+
+    /// <summary>
+    /// The one removal shape that is neither expiry, dispel, death nor a spent
+    /// shield: something decided to take a status back.
+    ///
+    /// It goes through here so it reports like the rest. RemoveAll was doing the
+    /// mutation directly and saying nothing, so a minion that moved on left its
+    /// victim marked as hunted in the replay for the rest of the fight -- the one
+    /// path out of the list that the chokepoint did not cover.
+    /// </summary>
+    private void Remove(double now, System.Predicate<ActiveStatus> match)
     {
-        int removed = _active.RemoveAll(status => status.Definition.Id == id && status.SourceId == sourceId);
+        int removed = 0;
+
+        for (int i = _active.Count - 1; i >= 0; i--)
+        {
+            if (!match(_active[i])) continue;
+
+            Note(applied: false, _active[i], now);
+            _active.RemoveAt(i);
+            removed++;
+        }
+
         if (removed > 0) Rebuild();
     }
 

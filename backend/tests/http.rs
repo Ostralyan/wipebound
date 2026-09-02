@@ -69,6 +69,17 @@ async fn state() -> Option<AppState> {
     })
 }
 
+async fn call_raw(state: AppState, request: Request<Body>) -> (StatusCode, Vec<u8>) {
+    let response = router(state).oneshot(request).await.expect("router failed");
+    let status = response.status();
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .expect("body")
+        .to_bytes();
+
+    (status, bytes.to_vec())
+}
+
 async fn call(state: AppState, request: Request<Body>) -> (StatusCode, Value) {
     let response = router(state).oneshot(request).await.expect("router failed");
     let status = response.status();
@@ -247,6 +258,38 @@ async fn the_ladder_can_say_who_played() {
     assert!(entries[0]["players"][0]["player_id"].is_null());
 }
 
+/// A well-formed document for one run: alice hits twice, is caught 1.8m inside a
+/// Crater, and dies at nine seconds of thirty.
+fn combat_log(run_id: &str, boss: &str) -> Value {
+    serde_json::json!({
+        "format": 2, "run_id": run_id, "boss": boss,
+        "duration_ms": 30000, "truncated": false,
+        "actors": [
+            {"id": 1, "name": "alice", "kind": "hero", "class": "Ember", "player_id": "a1b2c3d4e5f60718"},
+            {"id": -1, "name": "boss", "kind": "boss", "class": "", "player_id": ""}
+        ],
+        "names": ["Lance", "Crater"],
+        "events": [
+            [0,    10, 1, 1,  -1, 0,  0,    0],
+            [1000, 0,  1, -1, 0,  40, 0,    0],
+            [2000, 0,  1, -1, 0,  60, 0,    0],
+            [3000, 4,  -1, 1, 1,  0,  -180, 1],
+            [3010, 0,  -1, 1, 1,  25, 0,    0],
+            [9000, 9,  -1, 1, 1,  0,  0,    0]
+        ]
+    })
+}
+
+fn post_log(run_id: &str, body: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(format!("/v1/internal/runs/{run_id}/log"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::from(body))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn a_combat_log_becomes_numbers_a_site_can_show() {
     let app = require_db!();
@@ -263,34 +306,12 @@ async fn a_combat_log_becomes_numbers_a_site_can_show() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 
-    // alice hits twice, is caught 1.8m inside a Crater, and dies.
-    let log = serde_json::json!({
-        "format": 2, "duration_ms": 30000, "truncated": false,
-        "actors": [
-            {"id": 11, "name": "alice", "kind": "hero", "class": "Ember", "player_id": "alice-id"},
-            {"id": -1, "name": "boss", "kind": "boss", "class": "", "player_id": ""}
-        ],
-        "names": ["Lance", "Crater"],
-        "events": [
-            [0,    10, 11, 11, -1, 0,  0,    0],
-            [1000, 0,  11, -1, 0,  40, 0,    0],
-            [2000, 0,  11, -1, 0,  60, 0,    0],
-            [3000, 4,  -1, 11, 1,  0,  -180, 1],
-            [3010, 0,  -1, 11, 1,  25, 0,    0],
-            [9000, 9,  -1, 11, 1,  0,  0,    0]
-        ]
-    })
-    .to_string();
+    // alice hits twice, is caught 1.8m inside a Crater, and dies. Her id is the
+    // run's peer, because a log whose roster disagrees with its run is not
+    // evidence for it.
+    let log = combat_log(&id, &boss).to_string();
 
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("/v1/internal/runs/{id}/log"))
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {TOKEN}"))
-        .body(Body::from(log))
-        .unwrap();
-
-    let (status, body) = call(app.clone(), request).await;
+    let (status, body) = call(app.clone(), post_log(&id, log)).await;
     assert_eq!(
         status,
         StatusCode::CREATED,
@@ -318,13 +339,127 @@ async fn a_combat_log_becomes_numbers_a_site_can_show() {
     // And a per-second figure is divided by time on her feet, not by the fight.
     assert_eq!(alice["alive_ms"], 9000);
 
-    // The bytes come back as stored, so a replay reads what the server wrote.
+    // THE DOWNLOAD MUST DECODE. An uncompressed upload used to be stored raw and
+    // served with Content-Encoding: gzip, so the status was 200 and no browser
+    // could read a byte of it. Checking the status alone is what let that pass.
     let request = Request::builder()
         .uri(format!("/v1/runs/{id}/log"))
         .body(Body::empty())
         .unwrap();
-    let (status, _) = call(app, request).await;
+
+    let (status, bytes) = call_raw(app.clone(), request).await;
     assert_eq!(status, StatusCode::OK);
+
+    let mut json = Vec::new();
+    std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&bytes[..]), &mut json)
+        .expect("what is served as gzip must be gzip");
+
+    let round_tripped: Value = serde_json::from_slice(&json).expect("and must be the document");
+    assert_eq!(round_tripped["run_id"], id);
+}
+
+#[tokio::test]
+async fn a_log_is_evidence_and_therefore_not_rewritable() {
+    let app = require_db!();
+    let id = unique("evidence");
+    let boss = unique("Evidence");
+
+    let (status, _) = call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 30_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let log = combat_log(&id, &boss);
+    let (status, _) = call(app.clone(), post_log(&id, log.to_string())).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The same evidence twice is a retry, not a second upload.
+    let (status, body) = call(app.clone(), post_log(&id, log.to_string())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["duplicate"], true);
+
+    // DIFFERENT evidence for the same run is refused. Uploading used to delete
+    // whatever was there along with every statistic derived from it, so any
+    // authenticated server could rewrite the meters behind a run.
+    let mut altered = combat_log(&id, &boss);
+    altered["events"][1][5] = serde_json::json!(9_000);
+
+    let (status, _) = call(app.clone(), post_log(&id, altered.to_string())).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // And the original numbers are untouched.
+    let request = Request::builder()
+        .uri(format!("/v1/runs/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    let (_, body) = call(app, request).await;
+    assert_eq!(body["stats"][0]["damage_done"], 100);
+}
+
+#[tokio::test]
+async fn a_log_for_another_run_is_refused() {
+    let app = require_db!();
+    let id = unique("mine");
+    let boss = unique("Mine");
+
+    call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 30_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+
+    // Says it belongs to somebody else's run.
+    let (status, _) = call(
+        app.clone(),
+        post_log(
+            &id,
+            combat_log("00000000000000000000000000000000", &boss).to_string(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a log names its own run"
+    );
+
+    // Right run, different fight.
+    let (status, _) = call(
+        app.clone(),
+        post_log(&id, combat_log(&id, "A Different Boss").to_string()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "and must describe that run"
+    );
+
+    // Right run, wrong people.
+    let mut strangers = combat_log(&id, &boss);
+    strangers["actors"][0]["id"] = serde_json::json!(4242);
+    for event in strangers["events"].as_array_mut().unwrap() {
+        for slot in [2usize, 3usize] {
+            if event[slot] == 1 {
+                event[slot] = serde_json::json!(4242);
+            }
+        }
+    }
+
+    let (status, _) = call(app, post_log(&id, strangers.to_string())).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "and that run's players"
+    );
 }
 
 #[tokio::test]
