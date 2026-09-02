@@ -139,7 +139,7 @@ pub fn belongs_to(
     run_id: &str,
     boss: &str,
     duration_ms: i64,
-    roster: &[i64],
+    roster: &[(i64, String, String)],
 ) -> Result<(), LogError> {
     if document.run_id != run_id {
         return Err(LogError::WrongRun);
@@ -161,19 +161,26 @@ pub fn belongs_to(
         )));
     }
 
-    // Same people. Compared as a set of ids rather than by totals: per-event
-    // rounding means the sums legitimately differ by a little, and a roster
+    // Same people, and the same PEOPLE -- not merely the same seats.
+    //
+    // Comparing combat ids alone left the identity beside them unchecked, and
+    // the derived statistics take player_id and display_name from this document.
+    // A log could keep the right seat numbers, substitute somebody else's id,
+    // and rewrite whose public history this run appears in.
+    //
+    // Compared as a set of whole tuples rather than by totals: per-event
+    // rounding means sums legitimately differ by a little, and an identity
     // cannot differ by a little.
-    let mut logged: Vec<i64> = document
+    let mut logged: Vec<(i64, String, String)> = document
         .actors
         .iter()
         .filter(|actor| actor.kind == "hero")
-        .map(|actor| actor.id)
+        .map(|actor| (actor.id, actor.player_id.clone(), actor.name.clone()))
         .collect();
 
     let mut expected = roster.to_vec();
-    logged.sort_unstable();
-    expected.sort_unstable();
+    logged.sort();
+    expected.sort();
 
     if logged != expected {
         return Err(LogError::Disagrees(format!(
@@ -434,17 +441,12 @@ mod tests {
 
     #[test]
     fn a_log_must_say_which_run_it_is_evidence_for() {
+        const RUN: &str = "b8bd26e9aa2e8e42964fba0e43d50867";
         let doc = document();
-        let roster = vec![11];
+        let roster = vec![(11, "alice-id".to_string(), "alice".to_string())];
 
         assert_eq!(
-            belongs_to(
-                &doc,
-                "b8bd26e9aa2e8e42964fba0e43d50867",
-                "The Wipebringer",
-                20_000,
-                &roster
-            ),
+            belongs_to(&doc, RUN, "The Wipebringer", 20_000, &roster),
             Ok(())
         );
 
@@ -456,50 +458,61 @@ mod tests {
         );
 
         assert!(matches!(
-            belongs_to(
-                &doc,
-                "b8bd26e9aa2e8e42964fba0e43d50867",
-                "Somebody Else",
-                20_000,
-                &roster
-            ),
+            belongs_to(&doc, RUN, "Somebody Else", 20_000, &roster),
             Err(LogError::Disagrees(_))
         ));
 
         // Duration agrees to within a tick, because the log stops and the
         // summary is written at very nearly the same moment.
-        assert!(belongs_to(
-            &doc,
-            "b8bd26e9aa2e8e42964fba0e43d50867",
-            "The Wipebringer",
-            20_900,
-            &roster
-        )
-        .is_ok());
+        assert!(belongs_to(&doc, RUN, "The Wipebringer", 20_900, &roster).is_ok());
         assert!(matches!(
-            belongs_to(
-                &doc,
-                "b8bd26e9aa2e8e42964fba0e43d50867",
-                "The Wipebringer",
-                90_000,
-                &roster
-            ),
+            belongs_to(&doc, RUN, "The Wipebringer", 90_000, &roster),
             Err(LogError::Disagrees(_))
         ));
 
-        // Same fight, different people, is a different fight. Compared as a set
-        // of ids rather than by totals, which round per event and so differ by a
-        // little quite legitimately.
+        // Same fight, different people, is a different fight.
+        let extra = vec![
+            (11, "alice-id".to_string(), "alice".to_string()),
+            (12, "bob-id".to_string(), "bob".to_string()),
+        ];
         assert!(matches!(
-            belongs_to(
-                &doc,
-                "b8bd26e9aa2e8e42964fba0e43d50867",
-                "The Wipebringer",
-                20_000,
-                &[11, 12]
-            ),
+            belongs_to(&doc, RUN, "The Wipebringer", 20_000, &extra),
             Err(LogError::Disagrees(_))
         ));
+    }
+
+    #[test]
+    fn a_seat_number_is_not_an_identity() {
+        const RUN: &str = "b8bd26e9aa2e8e42964fba0e43d50867";
+        let doc = document();
+
+        // THE ONE THAT MATTERS. Comparing combat ids alone left the identity
+        // beside them unchecked, and derive() takes player_id and display_name
+        // straight from this document -- so a log could keep the right seat,
+        // substitute somebody else's id, and rewrite whose public history this
+        // run appears in.
+        let impostor = vec![(11, "somebody-elses-id".to_string(), "alice".to_string())];
+        assert!(
+            matches!(
+                belongs_to(&doc, RUN, "The Wipebringer", 20_000, &impostor),
+                Err(LogError::Disagrees(_))
+            ),
+            "the same seat with a different player id is a different person"
+        );
+
+        let renamed = vec![(11, "alice-id".to_string(), "mallory".to_string())];
+        assert!(
+            matches!(
+                belongs_to(&doc, RUN, "The Wipebringer", 20_000, &renamed),
+                Err(LogError::Disagrees(_))
+            ),
+            "and so is the same id under a different name"
+        );
+
+        // And what derive attributes is what was checked.
+        let derived = derive(&doc);
+        assert_eq!(derived.players[0].player_id, "alice-id");
+        assert_eq!(derived.players[0].display_name, "alice");
     }
 
     #[test]

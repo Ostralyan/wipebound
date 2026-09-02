@@ -20,7 +20,11 @@ use crate::{
 
 /// A log is mostly repeated integers and compresses about six to one, so a long
 /// fight is tens of kilobytes. This is a guard against a mistake, not a budget.
-const MAX_COMPRESSED: usize = 8 * 1024 * 1024;
+///
+/// Public, because the ROUTE has to carry it too. Axum's Bytes extractor applies
+/// its own default of two megabytes, so this check alone described a limit that
+/// was never reached and quietly refused every upload between two and eight.
+pub const MAX_COMPRESSED: usize = 8 * 1024 * 1024;
 const MAX_DECOMPRESSED: usize = 64 * 1024 * 1024;
 
 /// POST /v1/internal/runs/{id}/log -- the fight behind a run already submitted.
@@ -68,9 +72,16 @@ pub async fn upload(
         .optional()?
         .ok_or(AppError::NotFound)?;
 
-    let roster: Vec<i64> = run_players::table
+    // The whole identity of every seat, not just its number. The derived
+    // statistics take player_id and display_name from the uploaded document, so
+    // anything unverified here becomes somebody's public history.
+    let roster: Vec<(i64, String, String)> = run_players::table
         .filter(run_players::run_id.eq(&id))
-        .select(run_players::peer)
+        .select((
+            run_players::peer,
+            run_players::player_id,
+            run_players::display_name,
+        ))
         .load(&mut conn)
         .await?;
 
@@ -79,29 +90,6 @@ pub async fn upload(
     // could attach any fight to any run and rewrite its meters.
     logbook::belongs_to(&document, &id, &run.boss, run.duration_ms, &roster)
         .map_err(|error| AppError::Invalid(error.to_string()))?;
-
-    // Evidence is not rewritable. An identical retry is a retry; different bytes
-    // for a run that already has one are a conflict, exactly as they are for the
-    // run record itself.
-    let stored: Option<String> = run_logs::table
-        .filter(run_logs::run_id.eq(&id))
-        .select(run_logs::log_digest)
-        .first(&mut conn)
-        .await
-        .optional()?;
-
-    if let Some(existing) = stored {
-        if existing == digest {
-            return Ok((
-                StatusCode::OK,
-                Json(json!({ "run_id": id, "duplicate": true })),
-            ));
-        }
-
-        return Err(AppError::Conflict(
-            "this run already has a different combat log".into(),
-        ));
-    }
 
     let derived = logbook::derive(&document);
 
@@ -121,7 +109,7 @@ pub async fn upload(
         body: stored_body,
         events: derived.events,
         truncated: derived.truncated,
-        log_digest: digest,
+        log_digest: digest.clone(),
     };
 
     let players: Vec<NewPlayerStat> = derived
@@ -169,40 +157,83 @@ pub async fn upload(
         "players": derived.players.len(),
     });
 
-    // One transaction, and re-uploading replaces rather than duplicating: a
-    // server retrying after a timeout must not leave two half-attached logs.
-    conn.transaction::<_, diesel::result::Error, _>(|conn| {
-        async move {
-            // Nothing is deleted here any more. A run that already has a log
-            // returned above -- as a retry or as a conflict -- so reaching this
-            // point means there is nothing to replace, and evidence that could
-            // be replaced was not evidence.
-            diesel::insert_into(run_logs::table)
-                .values(&log)
-                .execute(conn)
-                .await?;
+    // THE INSERT DECIDES, not a read before it.
+    //
+    // Checking for an existing log and then inserting is two steps with a gap:
+    // two retries of the same upload both saw nothing, both inserted, and the
+    // loser got a primary key violation reported as a server error. Letting the
+    // insert resolve the conflict makes the whole decision one atomic step, so a
+    // duplicate is a duplicate however many arrive at once.
+    let claimed = id.clone();
+    let mine = digest.clone();
 
-            if !players.is_empty() {
-                diesel::insert_into(run_player_stats::table)
-                    .values(&players)
+    let outcome = conn
+        .transaction::<Landed, diesel::result::Error, _>(|conn| {
+            async move {
+                let inserted = diesel::insert_into(run_logs::table)
+                    .values(&log)
+                    .on_conflict(run_logs::run_id)
+                    .do_nothing()
                     .execute(conn)
                     .await?;
+
+                if inserted == 0 {
+                    // Somebody else got there. Whether that makes this a retry
+                    // or a conflict is theirs to decide, not ours.
+                    let existing: String = run_logs::table
+                        .filter(run_logs::run_id.eq(&claimed))
+                        .select(run_logs::log_digest)
+                        .first(conn)
+                        .await?;
+
+                    return Ok(if existing == mine {
+                        Landed::Duplicate
+                    } else {
+                        Landed::Conflict
+                    });
+                }
+
+                if !players.is_empty() {
+                    diesel::insert_into(run_player_stats::table)
+                        .values(&players)
+                        .execute(conn)
+                        .await?;
+                }
+
+                if !abilities.is_empty() {
+                    diesel::insert_into(run_ability_stats::table)
+                        .values(&abilities)
+                        .execute(conn)
+                        .await?;
+                }
+
+                Ok(Landed::Created)
             }
+            .scope_boxed()
+        })
+        .await?;
 
-            if !abilities.is_empty() {
-                diesel::insert_into(run_ability_stats::table)
-                    .values(&abilities)
-                    .execute(conn)
-                    .await?;
-            }
+    match outcome {
+        Landed::Created => Ok((StatusCode::CREATED, Json(summary))),
+        Landed::Duplicate => Ok((
+            StatusCode::OK,
+            Json(json!({ "run_id": id, "duplicate": true })),
+        )),
 
-            Ok(())
-        }
-        .scope_boxed()
-    })
-    .await?;
+        // Evidence is not rewritable. Different bytes for a run that already has
+        // a log are refused, exactly as they are for the run record itself.
+        Landed::Conflict => Err(AppError::Conflict(
+            "this run already has a different combat log".into(),
+        )),
+    }
+}
 
-    Ok((StatusCode::CREATED, Json(summary)))
+/// What the insert turned out to be. Decided inside the transaction, reported
+/// outside it, so the HTTP shape is chosen in one place.
+enum Landed {
+    Created,
+    Duplicate,
+    Conflict,
 }
 
 /// GET /v1/runs/{id}/log -- the bytes back, still gzipped.

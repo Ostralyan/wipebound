@@ -419,6 +419,104 @@ async fn a_log_is_evidence_and_therefore_not_rewritable() {
 }
 
 #[tokio::test]
+async fn two_retries_arriving_at_once_are_still_one_log() {
+    let app = require_db!();
+    let id = unique("race");
+    let boss = unique("Race");
+
+    call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 30_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+
+    // A game server that timed out and retried can have both requests in flight.
+    // The existence check used to happen before the insert, so both saw nothing,
+    // both inserted, and the loser got a primary key violation reported as a
+    // server error.
+    let log = combat_log(&id, &boss).to_string();
+    let (first, second) = tokio::join!(
+        call(app.clone(), post_log(&id, log.clone())),
+        call(app.clone(), post_log(&id, log)),
+    );
+
+    let mut codes = [first.0, second.0];
+    codes.sort_by_key(|code| code.as_u16());
+
+    assert_eq!(
+        codes,
+        [StatusCode::OK, StatusCode::CREATED],
+        "one stores it and the other recognises a retry; neither fails"
+    );
+
+    // And exactly one log landed, with one set of statistics behind it.
+    let request = Request::builder()
+        .uri(format!("/v1/runs/{id}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let (_, body) = call(app, request).await;
+    assert_eq!(body["has_log"], true);
+    assert_eq!(body["stats"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_seat_number_is_not_an_identity_over_http() {
+    let app = require_db!();
+    let id = unique("impostor");
+    let boss = unique("Impostor");
+
+    call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 30_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+
+    // Right seat, somebody else's identity. The derived statistics are what
+    // /v1/players reads, so accepting this would put this run in a stranger's
+    // history.
+    let mut impostor = combat_log(&id, &boss);
+    impostor["actors"][0]["player_id"] = serde_json::json!("0000111122223333");
+
+    let (status, _) = call(app.clone(), post_log(&id, impostor.to_string())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let mut renamed = combat_log(&id, &boss);
+    renamed["actors"][0]["name"] = serde_json::json!("mallory");
+
+    let (status, _) = call(app, post_log(&id, renamed.to_string())).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn the_upload_limit_is_the_one_the_handler_documents() {
+    let app = require_db!();
+    let id = unique("large");
+
+    // Three megabytes: over Axum's default of two, under the eight this route
+    // says it takes. Without a matching limit on the route the extractor
+    // rejected it before the handler ever ran, so the documented allowance was
+    // never reachable and valid uploads between two and eight were refused.
+    let bulk = "x".repeat(3 * 1024 * 1024);
+    let (status, _) = call(app, post_log(&id, bulk)).await;
+
+    assert_ne!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a body inside the documented limit must reach the handler"
+    );
+
+    // It is refused for what it is, not for how big it is.
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
 async fn a_log_for_another_run_is_refused() {
     let app = require_db!();
     let id = unique("mine");

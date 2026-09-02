@@ -82,7 +82,15 @@ pub fn router(state: AppState) -> Router {
     // subtree means the answer to "what can a submitter reach" is one line.
     let internal = Router::new()
         .route("/runs", post(routes::runs::submit))
-        .route("/runs/{id}/log", post(routes::logs::upload))
+        .route(
+            "/runs/{id}/log",
+            post(routes::logs::upload)
+                // Axum's default is two megabytes, which is not what the handler
+                // says it accepts. One constant, applied where it is enforced.
+                .layer(axum::extract::DefaultBodyLimit::max(
+                    routes::logs::MAX_COMPRESSED,
+                )),
+        )
         .route("/servers/heartbeat", post(routes::servers::heartbeat))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
