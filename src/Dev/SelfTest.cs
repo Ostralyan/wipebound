@@ -1350,8 +1350,10 @@ public static class SelfTest
         Check((int)document["format"] == CombatLog.FormatVersion, "the document declares its format");
         Check((int)document["duration_ms"] == 10_000, "duration is measured from the start of the fight");
 
-        var abilities = (Godot.Collections.Array)document["abilities"];
-        Check(abilities.Count == 4, $"each ability is named once, not per event (got {abilities.Count})");
+        // One table for every name the events refer to, abilities and statuses
+        // and phases alike, which is why it is not called "abilities".
+        var names = (Godot.Collections.Array)document["names"];
+        Check(names.Count == 4, $"each name is interned once, not repeated per event (got {names.Count})");
 
         var events = (Godot.Collections.Array)document["events"];
         Check(events.Count == 7, $"every call is one row (got {events.Count})");
@@ -1407,6 +1409,13 @@ public static class SelfTest
 
         Check(flood.EventCount == CombatLog.MaxEvents, "events stop at the cap");
         Check(flood.Truncated, "and the document says it was truncated rather than pretending");
+
+        // A resource that does not exist is absent, not full. A boss drawn with a
+        // brimming mana bar it never had is a lie a viewer cannot detect.
+        var withMana = (Godot.Collections.Dictionary)log.ToDocument("run-1", 1011.5)["tracks"];
+        var stride = (Godot.Collections.Array)withMana["stride"];
+        Check(stride.Count == CombatLog.LaneStride, "the stride names every field it carries");
+        Check(stride[stride.Count - 1].AsString() == "mana_permille", "and mana is one of them");
     }
 
     // -- the shape of a kit ----------------------------------------------

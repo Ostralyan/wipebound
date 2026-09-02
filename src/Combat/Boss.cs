@@ -70,6 +70,7 @@ public partial class Boss : Node3D, ICombatant
     // what lets more than one be in flight at a time. ---
     private double _nextCastAt;
     private double _resetAt;
+    private int _loggedPhase = -1;
     private double _wipeAt;
 
     /// True once the fight has actually started. Distinguishes a wipe from the
@@ -172,9 +173,15 @@ public partial class Boss : Node3D, ICombatant
             if (Phases[i] is not null && percent <= Phases[i].EntersAtHealthPercent)
                 wanted = i;
 
-        if (wanted == PhaseIndex) return;
+        // Also the FIRST one. Returning early whenever the wanted phase matched
+        // the current one meant the opening was never recorded at all: a replay
+        // showed nothing until the boss dropped through a threshold, so the phase
+        // that most of a fight happens in was the one phase with no name.
+        if (wanted == PhaseIndex && _loggedPhase == wanted) return;
 
+        _loggedPhase = wanted;
         PhaseIndex = wanted;
+        Session.RunRecorder.Instance?.Log.Phase(Now, this, CurrentPhase?.Name ?? "?", PhaseIndex);
         GD.Print($"[boss] entering phase {PhaseIndex}: {CurrentPhase?.Name}");
     }
 
@@ -263,7 +270,16 @@ public partial class Boss : Node3D, ICombatant
 
     private void BeginCast(Ability ability, double now)
     {
-        if (!_engaged) Session.RunRecorder.Instance?.BeginAttempt(DisplayName);
+        if (!_engaged)
+        {
+            Session.RunRecorder.Instance?.BeginAttempt(DisplayName);
+
+            // Announce the phase again on the next tick. UpdatePhase runs BEFORE
+            // this in the same frame, so its first announcement was written to a
+            // log that had not started yet and was cleared by the one that did.
+            _loggedPhase = -1;
+        }
+
         _engaged = true;
         _readyAt[ability] = now + ability.Cooldown;
 
@@ -302,6 +318,8 @@ public partial class Boss : Node3D, ICombatant
 
     private void RestartEncounter()
     {
+        // A new attempt announces its phase again: the log for it starts empty.
+        _loggedPhase = -1;
         _health.Fill();
         _status.Clear();
         _contribution.Clear();

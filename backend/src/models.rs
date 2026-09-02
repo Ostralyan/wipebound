@@ -98,6 +98,7 @@ pub struct NewPlayerStat {
     pub dispels: i32,
     pub deaths: i32,
     pub alive_ms: i64,
+    pub resource_spent: i64,
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]
@@ -119,6 +120,7 @@ pub struct PlayerStatRow {
     pub dispels: i32,
     pub deaths: i32,
     pub alive_ms: i64,
+    pub resource_spent: i64,
 }
 
 #[derive(Debug, Insertable)]
@@ -131,6 +133,7 @@ pub struct NewAbilityStat {
     pub healing: i64,
     pub hits: i32,
     pub casts: i32,
+    pub resource_spent: i64,
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]
@@ -144,4 +147,5 @@ pub struct AbilityStatRow {
     pub healing: i64,
     pub hits: i32,
     pub casts: i32,
+    pub resource_spent: i64,
 }

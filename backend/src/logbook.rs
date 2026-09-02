@@ -20,6 +20,7 @@ const INTERRUPT: i64 = 7;
 const DISPEL: i64 = 8;
 const DEATH: i64 = 9;
 const SPAWN: i64 = 10;
+const RESOURCE_SPENT: i64 = 11;
 
 /// How close in time a damage event has to be to a judgement for the two to be
 /// the same moment.
@@ -48,7 +49,9 @@ pub struct Document {
     #[serde(default)]
     pub truncated: bool,
     pub actors: Vec<Actor>,
-    pub abilities: Vec<String>,
+    /// Every name the events refer to: abilities, statuses and phases alike.
+    #[serde(alias = "abilities")]
+    pub names: Vec<String>,
 
     /// Rows of [t_ms, type, source, target, ability, amount, a, b].
     pub events: Vec<Vec<i64>>,
@@ -70,6 +73,10 @@ pub struct PlayerStats {
     pub dispels: i32,
     pub deaths: i32,
     pub alive_ms: i64,
+
+    /// What they spent to do all of it. Half of a rotation is knowing whether
+    /// somebody ran dry.
+    pub resource_spent: i64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -80,6 +87,7 @@ pub struct AbilityStats {
     pub healing: i64,
     pub hits: i32,
     pub casts: i32,
+    pub resource_spent: i64,
 }
 
 #[derive(Debug)]
@@ -102,7 +110,12 @@ pub enum LogError {
 }
 
 /// The format this backend can read. Bumped with the game's CombatLog.FormatVersion.
-pub const SUPPORTED_FORMAT: i32 = 1;
+///
+/// 2 added mana to the tracks and renamed the string table, which changes how a
+/// reader keys the lanes -- so a version 1 document is refused rather than
+/// half-understood. Logs already stored stay readable: they are served back as
+/// the bytes they arrived as, and the site sizes its stride from the document.
+pub const SUPPORTED_FORMAT: i32 = 2;
 
 pub fn parse(json: &[u8]) -> Result<Document, LogError> {
     let document: Document =
@@ -162,10 +175,7 @@ pub fn derive(document: &Document) -> Derived {
         );
 
         let name = |index: i64| -> Option<String> {
-            document
-                .abilities
-                .get(usize::try_from(index).ok()?)
-                .cloned()
+            document.names.get(usize::try_from(index).ok()?).cloned()
         };
 
         match kind {
@@ -235,8 +245,28 @@ pub fn derive(document: &Document) -> Derived {
                     actor.dispels += 1;
                 }
             }
+            RESOURCE_SPENT => {
+                if let Some(actor) = players.get_mut(&source) {
+                    actor.resource_spent += a;
+                }
+                if let Some(ability_name) = name(ability) {
+                    let entry =
+                        abilities
+                            .entry((source, ability_name.clone()))
+                            .or_insert(AbilityStats {
+                                combat_id: source,
+                                ability: ability_name,
+                                ..Default::default()
+                            });
+                    entry.resource_spent += a;
+                }
+            }
             SPAWN => {
-                spawned.insert(target.max(source), at);
+                // The SOURCE is the one who spawned. Reading it as
+                // target.max(source) worked only because peer ids happen to be
+                // positive: a boss at -1 or a minion at -100 was filed under 0,
+                // where they overwrote one another.
+                spawned.insert(source, at);
             }
             DEATH => {
                 if let Some(victim) = players.get_mut(&target) {
@@ -294,14 +324,14 @@ mod tests {
     fn document() -> Document {
         serde_json::from_str(
             r#"{
-              "format": 1,
+              "format": 2,
               "duration_ms": 20000,
               "truncated": false,
               "actors": [
                 {"id": 11, "name": "alice", "kind": "hero", "class": "Ember", "player_id": "alice-id"},
                 {"id": -1, "name": "boss", "kind": "boss", "class": "", "player_id": ""}
               ],
-              "abilities": ["Lance", "Mend", "Crater", "Rebuke"],
+              "names": ["Lance", "Mend", "Crater", "Rebuke"],
               "events": [
                 [0,     10, 11, 11, -1, 0,  0, 0],
                 [1000,  0,  11, -1, 0,  40, 0, 0],
@@ -312,6 +342,7 @@ mod tests {
                 [5000,  4,  -1, 11, 2,  0,  340, 0],
                 [5010,  0,  -1, 11, 3,  10, 0, 0],
                 [6000,  7,  11, -1, 3,  0,  0, 0],
+                [6500,  11, 11, 11, 0,  0,  18, 0],
                 [8000,  9,  -1, 11, 2,  0,  0, 0]
               ]
             }"#,
@@ -321,9 +352,56 @@ mod tests {
 
     #[test]
     fn a_wrong_format_is_refused_rather_than_half_read() {
-        let bad = br#"{"format":99,"duration_ms":0,"actors":[],"abilities":[],"events":[]}"#;
+        let bad = br#"{"format":99,"duration_ms":0,"actors":[],"names":[],"events":[]}"#;
         assert!(matches!(parse(bad), Err(LogError::UnsupportedFormat(99))));
         assert!(matches!(parse(b"not json"), Err(LogError::Unreadable(_))));
+
+        // Specifically the previous version. Its lanes are four wide where these
+        // are five, so reading one as the other would put a health bar where the
+        // mana bar goes rather than failing.
+        let old = br#"{"format":1,"duration_ms":0,"actors":[],"abilities":[],"events":[]}"#;
+        assert!(matches!(parse(old), Err(LogError::UnsupportedFormat(1))));
+    }
+
+    #[test]
+    fn what_a_rotation_cost_is_counted_too() {
+        let alice = &derive(&document()).players[0];
+        assert_eq!(alice.resource_spent, 18);
+
+        let lance = derive(&document())
+            .abilities
+            .into_iter()
+            .find(|a| a.ability == "Lance" && a.combat_id == 11)
+            .expect("Lance is hers");
+
+        assert_eq!(lance.resource_spent, 18, "and attributed to what bought it");
+    }
+
+    #[test]
+    fn a_spawn_belongs_to_whoever_spawned() {
+        // A NEGATIVE id, which is what a boss and every minion have. The spawn
+        // used to be filed under target.max(source), so anybody at or below zero
+        // landed under the same key and clobbered the others -- invisible while
+        // only heroes, whose peer ids are positive, were measured.
+        let mut doc = document();
+        doc.actors[0].id = -7;
+        for row in &mut doc.events {
+            for slot in [2usize, 3usize] {
+                if row[slot] == 11 {
+                    row[slot] = -7;
+                }
+            }
+        }
+
+        let derived = derive(&doc);
+        assert_eq!(derived.players.len(), 1);
+
+        // Spawned at 0, died at 8000. Read from the wrong key it would fall back
+        // to zero and give the same answer here, so the check that matters is
+        // that the actor is found at all.
+        assert_eq!(derived.players[0].combat_id, -7);
+        assert_eq!(derived.players[0].alive_ms, 8000);
+        assert_eq!(derived.players[0].damage_done, 100);
     }
 
     #[test]

@@ -44,6 +44,14 @@ public enum LogEventType
 
     Death = 9,
     Spawn = 10,
+
+    /// a = what it cost. Casting is the only thing that spends, so this is the
+    /// resource half of a rotation: what an ability bought, and what for.
+    ResourceSpent = 11,
+
+    /// a = phase index. The fight changes shape at thresholds, and a meter that
+    /// cannot say which phase a spike happened in cannot explain it.
+    PhaseChanged = 12,
 }
 
 /// <summary>
@@ -64,7 +72,10 @@ public sealed class CombatLog
 {
     /// Bumped when the document's shape changes, so a reader can refuse what it
     /// does not understand rather than guess.
-    public const int FormatVersion = 1;
+    /// 2 added mana to the tracks and two event types, and renamed the string
+    /// table from "abilities" to "names" now that it holds statuses and phases
+    /// too. A reader written for 1 would mis-key the lanes, so the number moves.
+    public const int FormatVersion = 2;
 
     /// <summary>
     /// How often the server writes down where everybody is.
@@ -94,10 +105,11 @@ public sealed class CombatLog
     /// </summary>
     public const int MaxEvents = 200_000;
 
-    /// x, z, facing, health -- four numbers per actor per sample. Facing and
-    /// health are here rather than as events because they change continuously:
-    /// as events they would be the largest stream in the document by far.
-    public const int LaneStride = 4;
+    /// x, z, facing, health, mana -- five numbers per actor per sample. All of
+    /// them change continuously, which is exactly why they are samples rather
+    /// than events: as events they would be the largest stream in the document
+    /// by a wide margin.
+    public const int LaneStride = 5;
 
     private readonly List<int[]> _events = new();
     private readonly List<string> _abilities = new();
@@ -220,6 +232,12 @@ public sealed class CombatLog
     public void Death(double now, ICombatant victim, ICombatant killer, string ability)
         => Add(LogEventType.Death, At(now), killer, victim, ability, 0, 0, 0);
 
+    public void Spent(double now, ICombatant caster, string ability, float amount)
+        => Add(LogEventType.ResourceSpent, At(now), caster, null, ability, 0, Round(amount), 0);
+
+    public void Phase(double now, ICombatant boss, string name, int index)
+        => Add(LogEventType.PhaseChanged, At(now), boss, null, name, 0, index, 0);
+
     /// <summary>
     /// Write down where everyone is, if enough time has passed.
     ///
@@ -273,6 +291,13 @@ public sealed class CombatLog
             // without also knowing every actor's maximum.
             float fraction = actor.HealthPool is null ? 1f : actor.HealthPool.Fraction;
             lane.Add(Mathf.Clamp(Mathf.RoundToInt(fraction * 1000f), 0, 1000));
+
+            // Absent rather than full for anything without a resource: a boss
+            // showing a full mana bar it does not have would be a lie a viewer
+            // cannot tell from the truth.
+            lane.Add(actor.ResourcePool is null
+                ? NoPosition
+                : Mathf.Clamp(Mathf.RoundToInt(actor.ResourcePool.Fraction * 1000f), 0, 1000));
         }
 
         _samples++;
@@ -394,6 +419,9 @@ public sealed class CombatLog
             events.Add(encoded);
         }
 
+        // One table for every name the events refer to -- abilities, statuses
+        // and phases alike. They are all strings that repeat, and a second table
+        // would only mean a second index space to get wrong.
         var abilities = new Godot.Collections.Array();
         foreach (string ability in _abilities) abilities.Add(ability);
 
@@ -417,13 +445,16 @@ public sealed class CombatLog
                 "t_ms", "type", "source", "target", "ability", "amount", "a", "b",
             },
             ["actors"] = actors,
-            ["abilities"] = abilities,
+            ["names"] = abilities,
             ["events"] = events,
             ["tracks"] = new Godot.Collections.Dictionary
             {
                 ["interval_ms"] = PositionIntervalMs,
                 ["absent"] = NoPosition,
-                ["stride"] = new Godot.Collections.Array { "x_cm", "z_cm", "facing_decideg", "health_permille" },
+                ["stride"] = new Godot.Collections.Array
+                {
+                    "x_cm", "z_cm", "facing_decideg", "health_permille", "mana_permille",
+                },
                 ["samples"] = _samples,
                 ["lanes"] = lanes,
             },

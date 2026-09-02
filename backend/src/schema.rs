@@ -74,6 +74,7 @@ diesel::table! {
         dispels -> Int4,
         deaths -> Int4,
         alive_ms -> Int8,
+        resource_spent -> Int8,
     }
 }
 
@@ -86,6 +87,7 @@ diesel::table! {
         healing -> Int8,
         hits -> Int4,
         casts -> Int4,
+        resource_spent -> Int8,
     }
 }
 

@@ -53,6 +53,15 @@ public interface ICombatant
     bool IsAlive { get; }
     ResourcePool HealthPool { get; }
 
+    /// <summary>
+    /// What this combatant spends to act, or null for anything that does not.
+    ///
+    /// Nullable rather than an empty pool: a boss with a zero-length mana bar
+    /// and a boss with no mana bar look identical to a reader, and only one of
+    /// them is true.
+    /// </summary>
+    ResourcePool ResourcePool => null;
+
     /// Running tally of what this combatant has done this attempt.
     Contribution Contribution { get; }
 

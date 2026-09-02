@@ -129,6 +129,8 @@ public partial class Hero : CharacterBody3D, ICombatant
     public bool IsAlive => !_health.IsEmpty;
     public ResourcePool HealthPool => _health;
     public ResourcePool ManaPool => _mana;
+
+    public ResourcePool ResourcePool => _mana;
     public StatusTracker Status => _status;
     public Contribution Contribution => _contribution;
     public Node3D Node => this;

@@ -35,6 +35,13 @@ pub struct Config {
     /// because that is the point of storing provenance rather than assuming it --
     /// the day a platform ticket can be checked, this flag is the whole migration.
     pub ranked_require_verified_identity: bool,
+
+    /// How long a replay stays available, in days. Zero keeps them for ever.
+    ///
+    /// Only the log expires; the numbers derived from it are permanent. A run
+    /// three months old keeps its meters and its ladder position and loses the
+    /// ability to be watched.
+    pub log_retention_days: i64,
 }
 
 impl Config {
@@ -56,6 +63,10 @@ impl Config {
                 .filter(|hash| !hash.trim().is_empty())
                 .unwrap_or_else(|| ranked.first().cloned().unwrap_or_default()),
             ranked_require_verified_identity: flag("RANKED_REQUIRE_VERIFIED_IDENTITY", false)?,
+            log_retention_days: std::env::var("LOG_RETENTION_DAYS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(90),
             ranked_max_overreach_cm: std::env::var("RANKED_MAX_OVERREACH_CM")
                 .ok()
                 .and_then(|value| value.parse().ok())

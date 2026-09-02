@@ -94,6 +94,8 @@ public sealed class CastAbilityCommand : ClientCommand
     public override void Execute(CommandContext context)
     {
         context.Hero.ManaPool.TrySpend(_ability.ManaCost);
+        Session.RunRecorder.Instance?.Log.Spent(
+            context.Now, context.Hero, _ability.DisplayName, _ability.ManaCost);
         context.Hero.StartCooldown(_slot, context.Now);
 
         CombatDirector.Instance.Begin(context.Hero, _ability, _aimPoint, _targetId);

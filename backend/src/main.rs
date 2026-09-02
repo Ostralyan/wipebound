@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use wipebound_backend::{config::Config, db, router, AppState};
+use wipebound_backend::{config::Config, db, retention, router, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,6 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Arc::new(Config::from_env()?);
     let pool = db::build_pool(&config.database_url).await?;
+    retention::spawn(pool.clone(), config.log_retention_days);
+
     let state = AppState {
         pool,
         config: Arc::clone(&config),

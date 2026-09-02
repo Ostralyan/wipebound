@@ -60,6 +60,7 @@ async fn state() -> Option<AppState> {
         current_content_hash: HASH.into(),
         ranked_max_overreach_cm: 200,
         ranked_require_verified_identity: false,
+        log_retention_days: 90,
     };
 
     Some(AppState {
@@ -264,12 +265,12 @@ async fn a_combat_log_becomes_numbers_a_site_can_show() {
 
     // alice hits twice, is caught 1.8m inside a Crater, and dies.
     let log = serde_json::json!({
-        "format": 1, "duration_ms": 30000, "truncated": false,
+        "format": 2, "duration_ms": 30000, "truncated": false,
         "actors": [
             {"id": 11, "name": "alice", "kind": "hero", "class": "Ember", "player_id": "alice-id"},
             {"id": -1, "name": "boss", "kind": "boss", "class": "", "player_id": ""}
         ],
-        "abilities": ["Lance", "Crater"],
+        "names": ["Lance", "Crater"],
         "events": [
             [0,    10, 11, 11, -1, 0,  0,    0],
             [1000, 0,  11, -1, 0,  40, 0,    0],

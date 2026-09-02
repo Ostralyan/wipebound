@@ -15,6 +15,7 @@ pub mod domain;
 pub mod error;
 pub mod logbook;
 pub mod models;
+pub mod retention;
 pub mod routes;
 pub mod schema;
 
@@ -38,6 +39,8 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/leaderboards/{boss}", get(routes::leaderboard::top))
+        .route("/bosses", get(routes::players::bosses))
+        .route("/players/{player_id}", get(routes::players::history))
         .route("/runs/recent", get(routes::runs::recent))
         .route("/runs/{id}", get(routes::runs::detail))
         .route("/runs/{id}/log", get(routes::logs::download));

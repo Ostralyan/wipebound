@@ -94,6 +94,7 @@ pub async fn upload(
             dispels: player.dispels,
             deaths: player.deaths,
             alive_ms: player.alive_ms,
+            resource_spent: player.resource_spent,
         })
         .collect();
 
@@ -108,6 +109,7 @@ pub async fn upload(
             healing: entry.healing,
             hits: entry.hits,
             casts: entry.casts,
+            resource_spent: entry.resource_spent,
         })
         .collect();
 
