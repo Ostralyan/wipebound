@@ -23,7 +23,10 @@ public partial class DispelEffect : AbilityEffect
         foreach (ICombatant target in context.Targets)
         {
             int before = target.Status.Active.Count;
-            target.Status.Dispel(StripBeneficial, Count);
+            // The removals themselves come from StatusTracker; this records who
+            // did it and how much, which is a fact about the caster rather than
+            // about any one status.
+            target.Status.Dispel(StripBeneficial, Count, context.Now);
 
             Session.RunRecorder.Instance?.Log.Dispel(
                 context.Now, context.Caster, target, context.AbilityName,

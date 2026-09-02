@@ -52,6 +52,7 @@ public static class SelfTest
         ClassChoice();
         Identity();
         CombatLogging();
+        StatusTransitionsReachTheLog();
         MovementUnderBurstyClaims();
         KitShape();
         Controls();
@@ -544,7 +545,7 @@ public static class SelfTest
         hero.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), null, 100.0);
         hero.Status.Apply(StatusLibrary.Get(StatusLibrary.Haste), null, 100.0);
 
-        Check(hero.Status.Dispel(beneficial: false, count: 1) == 1, "a debuff is cleansed");
+        Check(hero.Status.Dispel(beneficial: false, count: 1, now: 100.0) == 1, "a debuff is cleansed");
         Check(hero.Status.Has(StatusLibrary.Haste), "cleansing a debuff leaves buffs alone");
         Near(hero.Status.MoveSpeedMultiplier, 1.45f, "aggregates update after a cleanse");
 
@@ -552,12 +553,12 @@ public static class SelfTest
         StatusEffect detonation = StatusLibrary.Get(StatusLibrary.Detonation);
         Check(!detonation.Dispellable, "a bomb cannot simply be cleansed away");
         stubborn.Status.Apply(detonation, null, 100.0);
-        Check(stubborn.Status.Dispel(beneficial: false, count: 5) == 0, "undispellable statuses survive a cleanse");
+        Check(stubborn.Status.Dispel(beneficial: false, count: 5, now: 100.0) == 0, "undispellable statuses survive a cleanse");
 
         var many = new Dummy();
         many.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), null, 100.0);
         many.Status.Apply(StatusLibrary.Get(StatusLibrary.Sundered), null, 100.0);
-        Check(many.Status.Dispel(beneficial: false, count: 1) == 1, "dispel respects its count");
+        Check(many.Status.Dispel(beneficial: false, count: 1, now: 100.0) == 1, "dispel respects its count");
         Check(many.Status.Active.Count == 1, "only one was taken");
     }
 
@@ -608,13 +609,13 @@ public static class SelfTest
         // Removing it early is the entire point of removing it.
         var cleansed = new Dummy();
         cleansed.Status.Apply(bomb, null, 100.0);
-        cleansed.Status.Dispel(beneficial: false, count: 1);
+        cleansed.Status.Dispel(beneficial: false, count: 1, now: 100.0);
         cleansed.Status.Tick(cleansed, 200.0);
         Near(cleansed.HealthPool.Current, 1000f, "a dispelled bomb does not detonate");
 
         var died = new Dummy();
         died.Status.Apply(bomb, null, 100.0);
-        died.Status.Clear();
+        died.Status.Clear(100.0);
         died.Status.Tick(died, 200.0);
         Near(died.HealthPool.Current, 1000f, "clearing on death does not detonate");
 
@@ -1416,6 +1417,97 @@ public static class SelfTest
         var stride = (Godot.Collections.Array)withMana["stride"];
         Check(stride.Count == CombatLog.LaneStride, "the stride names every field it carries");
         Check(stride[stride.Count - 1].AsString() == "mana_permille", "and mana is one of them");
+    }
+
+    /// <summary>
+    /// A real tracker, driven through the transitions a fight produces, folded
+    /// the way a reader folds it.
+    ///
+    /// The encoder had tests and the tracker had tests and the two were never
+    /// put together, which is exactly how a dispel came to emit no removal at
+    /// all: the log recorded that somebody cleansed, and never that anything
+    /// went away, so a replay showed cleansed auras for the rest of the fight.
+    /// </summary>
+    private static Dictionary<(int Source, string Name), int> Held(CombatLog log, int target, double now)
+    {
+        var document = log.ToDocument("run", now);
+        var names = (Godot.Collections.Array)document["names"];
+        var held = new Dictionary<(int, string), int>();
+
+        foreach (Godot.Collections.Array row in (Godot.Collections.Array)document["events"])
+        {
+            int kind = (int)row[1], source = (int)row[2], subject = (int)row[3], name = (int)row[4];
+            if (subject != target) continue;
+
+            // Keyed by SOURCE as well as name, as both readers are.
+            var key = (source, name >= 0 ? names[name].AsString() : "");
+
+            if (kind == (int)LogEventType.AuraApplied) held[key] = (int)row[6];
+            else if (kind == (int)LogEventType.AuraRemoved) held.Remove(key);
+        }
+
+        return held;
+    }
+
+    private static void StatusTransitionsReachTheLog()
+    {
+        var log = new CombatLog();
+        log.Begin("Wipebringer", 100.0);
+
+        var alice = new Dummy { CombatId = 11, CombatName = "alice" };
+        var bob = new Dummy { CombatId = 22, CombatName = "bob" };
+        var victim = new Dummy { CombatId = 99, CombatName = "victim", Team = Team.Enemies };
+
+        victim.Status.Owner = victim;
+        victim.Status.Journal = log;
+
+        StatusEffect burning = StatusLibrary.Get(StatusLibrary.Burning);
+        Check(burning.Scope == StatusScope.PerSource, "burning is per caster");
+
+        victim.Status.Apply(burning, alice, 100.0);
+        victim.Status.Apply(burning, bob, 100.0);
+
+        var held = Held(log, victim.CombatId, 110.0);
+        Check(held.Count == 2, $"two casters produce two aura entries, not one (got {held.Count})");
+        Check(held.ContainsKey((11, "Burning")) && held.ContainsKey((22, "Burning")),
+              "and each is attributed to the caster who applied it");
+
+        // ONE of them is cleansed. The other must survive, which it cannot if a
+        // reader keys by name alone.
+        Check(victim.Status.Dispel(beneficial: false, count: 1, now: 101.0) == 1, "one instance is dispelled");
+
+        held = Held(log, victim.CombatId, 110.0);
+        Check(held.Count == 1, $"a dispel removes exactly one of them from the replay (got {held.Count})");
+
+        // And the rest of it goes when the last one expires.
+        victim.Status.Tick(victim, 200.0);
+        Check(Held(log, victim.CombatId, 200.0).Count == 0, "expiry clears the last one");
+
+        // Death takes everything, and says so rather than leaving a buff bar
+        // hanging on a corpse for the rest of the replay.
+        var doomed = new Dummy { CombatId = 5, CombatName = "doomed" };
+        var second = new CombatLog();
+        second.Begin("Wipebringer", 0.0);
+        doomed.Status.Owner = doomed;
+        doomed.Status.Journal = second;
+
+        doomed.Status.Apply(StatusLibrary.Get(StatusLibrary.Warded), alice, 0.0);
+        doomed.Status.Apply(StatusLibrary.Get(StatusLibrary.Crippled), bob, 0.0);
+        Check(Held(second, doomed.CombatId, 1.0).Count == 2, "two statuses are held");
+
+        doomed.Status.Clear(1.0);
+        Check(Held(second, doomed.CombatId, 1.0).Count == 0, "and death removes both from the replay");
+
+        // A spent shield is gone from the bar, so it must go from the replay.
+        var shielded = new Dummy { CombatId = 6, CombatName = "shielded" };
+        var third = new CombatLog();
+        third.Begin("Wipebringer", 0.0);
+        shielded.Status.Owner = shielded;
+        shielded.Status.Journal = third;
+
+        shielded.Status.Apply(StatusLibrary.Get(StatusLibrary.Warded), alice, 0.0);
+        shielded.Status.AbsorbDamage(10_000f, 0.5);
+        Check(Held(third, shielded.CombatId, 1.0).Count == 0, "a shield spent to nothing leaves the replay too");
     }
 
     // -- the shape of a kit ----------------------------------------------

@@ -81,6 +81,11 @@ public partial class Boss : Node3D, ICombatant
 
     public override void _Ready()
     {
+        // The tracker reports its own transitions, and needs to know whose
+        // and where.
+        _status.Owner = this;
+        _status.Journal = Session.RunRecorder.Instance?.Log;
+
         AddToGroup(GroupName);
         AddToGroup(Combatants.GroupName);
         _label = GetNode<Label3D>("NameLabel");
@@ -321,7 +326,7 @@ public partial class Boss : Node3D, ICombatant
         // A new attempt announces its phase again: the log for it starts empty.
         _loggedPhase = -1;
         _health.Fill();
-        _status.Clear();
+        _status.Clear(Now);
         _contribution.Clear();
         PhaseIndex = 0;
         _readyAt.Clear();
@@ -346,7 +351,7 @@ public partial class Boss : Node3D, ICombatant
     public void ResetForNewSession()
     {
         _health.Fill();
-        _status.Clear();
+        _status.Clear(Now);
         PhaseIndex = 0;
         _readyAt.Clear();
         _nextCastAt = 0.0;

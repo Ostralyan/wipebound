@@ -217,6 +217,11 @@ public partial class Hero : CharacterBody3D, ICombatant
 
     public override void _Ready()
     {
+        // The tracker reports its own transitions, and needs to know whose
+        // and where.
+        _status.Owner = this;
+        _status.Journal = Session.RunRecorder.Instance?.Log;
+
         AddToGroup(GroupName);
         AddToGroup(Combatants.GroupName);
 
@@ -295,7 +300,7 @@ public partial class Hero : CharacterBody3D, ICombatant
         {
             // Death clears everything: a slow that outlived you would apply to the
             // hero that comes back, which is a different fight.
-            _status.Clear();
+            _status.Clear(Now);
             Session.RunRecorder.Instance?.Log.Death(Now, this, source, label);
             GD.Print($"[combat] {CombatName} died to {label}");
         }
@@ -321,7 +326,7 @@ public partial class Hero : CharacterBody3D, ICombatant
 
         _health.Fill();
         _mana.Fill();
-        _status.Clear();
+        _status.Clear(Now);
         _contribution.Clear();
         Overreach = 0f;
         ClearCooldowns();

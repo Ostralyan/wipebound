@@ -208,12 +208,16 @@ async function replay(id, duration) {
 
   const phases = log.events.filter(e => e[1] === 12).map(e => ({ at: e[0], name: names[e[4]] ?? '?' }));
 
+  // Keyed by SOURCE as well as name. Burning and Hunted exist separately per
+  // caster, so keying by name alone would let one caster's instance overwrite
+  // another's and a single removal clear them all.
   function aurasAt(at) {
     const held = {};
-    for (const [t, kind, , target, name] of log.events) {
+    for (const [t, kind, source, target, name] of log.events) {
       if (t > at) break;
-      if (kind === 5) (held[target] ??= new Set()).add(names[name]);
-      else if (kind === 6) held[target]?.delete(names[name]);
+      const held_ = held[target] ??= new Map();
+      if (kind === 5) held_.set(`${source}:${name}`, names[name]);
+      else if (kind === 6) held_.delete(`${source}:${name}`);
     }
     return held;
   }
@@ -283,7 +287,7 @@ async function replay(id, duration) {
       ctx.fillStyle = '#e6edf3'; ctx.font = '11px sans-serif';
       ctx.fillText(actor.name ?? id, px + 11, pz + 1);
 
-      const auras = [...(held[id] ?? [])];
+      const auras = [...(held[id]?.values() ?? [])];
       if (auras.length) {
         ctx.fillStyle = '#fbbf24'; ctx.font = '10px sans-serif';
         ctx.fillText(auras.join(' '), px + 11, pz + 12);

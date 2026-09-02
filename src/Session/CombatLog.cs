@@ -105,6 +105,21 @@ public sealed class CombatLog
     /// </summary>
     public const int MaxEvents = 200_000;
 
+    /// <summary>
+    /// A ceiling on samples, and on everything else that grows with time.
+    ///
+    /// Capping events alone was not bounding anything: the position stream is
+    /// ten samples a second for every actor and is by far the largest part of a
+    /// document, so an encounter that never ended kept growing after the event
+    /// cap stopped it. Thirty-six thousand samples is an hour of fighting, which
+    /// is already far beyond any real attempt.
+    /// </summary>
+    public const int MaxSamples = 36_000;
+
+    /// The same idea for what gets drawn. A channel fires a projectile every
+    /// tenth of a second, so this is the one an endless fight reaches first.
+    public const int MaxDrawn = 50_000;
+
     /// x, z, facing, health, mana -- five numbers per actor per sample. All of
     /// them change continuously, which is exactly why they are samples rather
     /// than events: as events they would be the largest stream in the document
@@ -220,8 +235,20 @@ public sealed class CombatLog
 
     public void Aura(double now, bool applied, ICombatant source, ICombatant target,
                      string status, int stacks, double remainingSeconds)
+        => Aura(now, applied, source?.CombatId ?? 0, target, status, stacks, remainingSeconds);
+
+    /// <summary>
+    /// By source ID, because that is what a StatusTracker holds.
+    ///
+    /// The source is not decoration. Burning and Hunted exist separately per
+    /// caster, so a reader that keyed auras by target and name alone would let
+    /// one caster's instance overwrite another's and one removal clear both.
+    /// </summary>
+    public void Aura(double now, bool applied, int sourceId, ICombatant target,
+                     string status, int stacks, double remainingSeconds)
         => Add(applied ? LogEventType.AuraApplied : LogEventType.AuraRemoved,
-               At(now), source, target, status, 0, stacks, Round((float)remainingSeconds * 1000f));
+               At(now), sourceId, target?.CombatId ?? 0, status, 0, stacks,
+               Round((float)remainingSeconds * 1000f));
 
     public void Interrupt(double now, ICombatant source, ICombatant target, string ability)
         => Add(LogEventType.Interrupt, At(now), source, target, ability, 0, 0, 0);
@@ -248,6 +275,12 @@ public sealed class CombatLog
     {
         if (!Recording) return;
         if (now - _lastSampleAt < PositionIntervalMs / 1000.0) return;
+
+        if (_samples >= MaxSamples)
+        {
+            Truncated = true;
+            return;
+        }
 
         _lastSampleAt = now;
 
@@ -325,7 +358,7 @@ public sealed class CombatLog
     public void Telegraph(long id, ICombatant caster, string ability,
                           Godot.Collections.Dictionary area, double castStart, double castEnd, Color colour)
     {
-        if (!Recording) return;
+        if (!Recording || Full(_telegraphs)) return;
 
         _telegraphs.Add(new Godot.Collections.Dictionary
         {
@@ -342,7 +375,7 @@ public sealed class CombatLog
     public void Hazard(long id, ICombatant owner, string name,
                        Godot.Collections.Dictionary area, double from, double until, Color tint)
     {
-        if (!Recording) return;
+        if (!Recording || Full(_hazards)) return;
 
         _hazards.Add(new Godot.Collections.Dictionary
         {
@@ -366,7 +399,7 @@ public sealed class CombatLog
     public void Projectile(long id, ICombatant owner, string ability, Vector3 origin, Vector3 direction,
                            float speed, float radius, double spawnedAt, double expiresAt, Color tint)
     {
-        if (!Recording) return;
+        if (!Recording || Full(_projectiles)) return;
 
         _projectiles.Add(new Godot.Collections.Dictionary
         {
@@ -468,6 +501,10 @@ public sealed class CombatLog
 
     private void Add(LogEventType type, int at, ICombatant source, ICombatant target,
                      string ability, int amount, int a, int b)
+        => Add(type, at, source?.CombatId ?? 0, target?.CombatId ?? 0, ability, amount, a, b);
+
+    private void Add(LogEventType type, int at, int sourceId, int targetId,
+                     string ability, int amount, int a, int b)
     {
         if (!Recording) return;
 
@@ -481,13 +518,27 @@ public sealed class CombatLog
         {
             at,
             (int)type,
-            source?.CombatId ?? 0,
-            target?.CombatId ?? 0,
+            sourceId,
+            targetId,
             Intern(ability),
             amount,
             a,
             b,
         });
+    }
+
+    /// <summary>
+    /// Whether a drawn-thing list has taken all it is going to.
+    ///
+    /// Marks the document truncated rather than silently dropping, so a reader
+    /// can tell a short fight from one that outran its budget.
+    /// </summary>
+    private bool Full(Godot.Collections.Array list)
+    {
+        if (list.Count < MaxDrawn) return false;
+
+        Truncated = true;
+        return true;
     }
 
     private int Intern(string ability)

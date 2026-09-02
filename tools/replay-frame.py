@@ -22,19 +22,31 @@ def frame(doc, at_ms):
     index = min(at_ms // interval, tracks["samples"] - 1)
     names = {a["id"]: a for a in doc["actors"]}
 
+    # Fields are read BY NAME from the stride the document declares, not by
+    # unpacking a fixed number of them. Format 2 added mana as a fifth, and a
+    # reader that assumed four stopped working the day it arrived.
+    field = {name: i for i, name in enumerate(tracks["stride"])}
+
     actors = []
     for raw_id, lane in tracks["lanes"].items():
         base = index * stride
         if base + stride > len(lane) or lane[base] == absent:
             continue
-        x, z, facing, health = lane[base:base + stride]
+
+        sample = lane[base:base + stride]
+        pick = lambda name, default=absent: (
+            sample[field[name]] if name in field else default
+        )
+
+        mana = pick("mana_permille")
         who = names.get(int(raw_id), {})
         actors.append({
             "name": who.get("name", raw_id),
             "kind": who.get("kind", "?"),
-            "x": x / 100, "z": z / 100,
-            "facing": facing / 10,
-            "health": health / 10,
+            "x": pick("x_cm") / 100, "z": pick("z_cm") / 100,
+            "facing": pick("facing_decideg") / 10,
+            "health": pick("health_permille") / 10,
+            "mana": None if mana == absent else mana / 10,
         })
 
     # Anything drawn on the ground whose window contains this instant.
@@ -60,15 +72,18 @@ def frame(doc, at_ms):
             "z": shot["z_cm"] / 100 + shot["dz"] * travelled,
         })
 
-    # Auras are a fold over the event stream up to this instant.
+    # Auras are a fold over the event stream up to this instant, keyed by SOURCE
+    # as well as name: Burning and Hunted exist separately per caster, so keying
+    # by name alone lets one caster's instance overwrite another's and one
+    # removal clear both.
     auras = {}
     for t, kind, source, target, ability, _amount, a, b in doc["events"]:
         if t > at_ms:
             break
         if kind == 5:
-            auras.setdefault(target, {})[ability] = (a, t + b)
+            auras.setdefault(target, {})[(source, ability)] = (a, t + b)
         elif kind == 6:
-            auras.get(target, {}).pop(ability, None)
+            auras.get(target, {}).pop((source, ability), None)
 
     return actors, ground, flying, auras, names
 
@@ -81,9 +96,10 @@ def main():
     print(f"=== {doc['boss']} at t={at_ms / 1000:.1f}s of {doc['duration_ms'] / 1000:.1f}s ===")
     for actor in sorted(actors, key=lambda a: a["kind"]):
         held = auras.get(next((i for i, n in names.items() if n["name"] == actor["name"]), None), {})
-        buffs = " ".join(f"{doc['abilities'][i]}x{s}" for i, (s, _) in held.items()) if held else "-"
+        buffs = " ".join(f"{doc['names'][i]}x{s}" for (_, i), (s, _) in held.items()) if held else "-"
+        mana = "  --  " if actor["mana"] is None else f"{actor['mana']:>5.1f}%"
         print(f"  {actor['kind']:<7} {actor['name']:<16} ({actor['x']:>7.1f},{actor['z']:>7.1f}) "
-              f"facing {actor['facing']:>5.1f}  hp {actor['health']:>5.1f}%  {buffs}")
+              f"facing {actor['facing']:>5.1f}  hp {actor['health']:>5.1f}%  mp {mana}  {buffs}")
 
     print(f"  -- {len(ground)} on the ground, {len(flying)} in the air --")
     for item in ground:

@@ -157,7 +157,8 @@ public static class Combatants
     public static float ResolveIncoming(float amount, ICombatant source, ICombatant target, string ability = "")
     {
         float scaled = ScaleDamage(amount, source, target);
-        float landed = target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled);
+        double when = Net.NetClock.Instance?.ServerTime ?? 0.0;
+        float landed = target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled, when);
 
         // Attribution belongs here and nowhere else. This is already the one place
         // that knows the final number, so recording it costs nothing and no future

@@ -373,7 +373,12 @@ public partial class EncounterHud : Control
         float total = 0f;
         foreach (Hero hero in heroes) total += Amount(hero);
 
-        if (_combatStartedAt <= 0.0 && total > 0f) _combatStartedAt = now;
+        // Cleared when the totals are, which is what an encounter reset does to
+        // every contribution. Without this the clock ran on through the wipe, the
+        // eight seconds of nothing and the next attempt, so every per-second
+        // figure after the first attempt was quietly too low.
+        if (total <= 0f) _combatStartedAt = 0.0;
+        else if (_combatStartedAt <= 0.0) _combatStartedAt = now;
         double elapsed = _combatStartedAt > 0.0 ? Mathf.Max(now - _combatStartedAt, 0.001) : 0.0;
 
         float leader = heroes.Count > 0 ? Mathf.Max(Amount(heroes[0]), 1f) : 1f;

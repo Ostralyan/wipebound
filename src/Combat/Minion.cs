@@ -85,6 +85,11 @@ public partial class Minion : CharacterBody3D, ICombatant
 
     public override void _Ready()
     {
+        // The tracker reports its own transitions, and needs to know whose
+        // and where.
+        _status.Owner = this;
+        _status.Journal = Session.RunRecorder.Instance?.Log;
+
         AddToGroup(Combatants.GroupName);
         _label = GetNode<Label3D>("NameLabel");
         Attack ??= MinionKit.Claw();

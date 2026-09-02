@@ -84,6 +84,41 @@ public sealed class StatusTracker
         return null;
     }
 
+    /// <summary>
+    /// Whose statuses these are.
+    ///
+    /// Set by the combatant that owns the tracker, because a status transition
+    /// is only fully described from here: this is the single place that knows
+    /// the definition, the source, the resulting stack count, the expiry, and
+    /// every way one can leave -- expiry, dispel, a spent shield, death.
+    ///
+    /// Logging used to live on the effects instead, which is why dispels emitted
+    /// no removal at all and per-source instances were flattened. Damage does not
+    /// have that problem because it reports from its own chokepoint.
+    /// </summary>
+    public ICombatant Owner { get; set; }
+
+    /// <summary>
+    /// Where transitions are written. Handed in rather than looked up, so this
+    /// class can be driven end to end by a test: reaching for a global here
+    /// would have meant the only way to check a dispel actually emits removals
+    /// was to run a whole fight.
+    /// </summary>
+    public Session.CombatLog Journal { get; set; }
+
+    /// <summary>
+    /// Write down a transition. No-op off the server, where RunRecorder is not
+    /// recording, so the client's mirror of this list stays silent.
+    /// </summary>
+    private void Note(bool applied, ActiveStatus status, double now)
+    {
+        if (Owner is null || status is null) return;
+
+        Journal?.Aura(
+            now, applied, status.SourceId, Owner, status.Definition.DisplayName,
+            status.Stacks, applied ? Mathf.Max(status.ExpiresAt - now, 0.0) : 0.0);
+    }
+
     // -- server side ------------------------------------------------------
 
     public void Apply(StatusEffect definition, ICombatant source, double now)
@@ -125,6 +160,11 @@ public sealed class StatusTracker
         }
 
         Rebuild();
+
+        // Reported from here rather than from the effect that asked, because the
+        // resulting stack count and expiry are decided above and an effect can
+        // only guess at them.
+        Note(applied: true, Find(definition.Id, definition.Scope == StatusScope.PerSource ? sourceId : null), now);
     }
 
     public void Remove(string id)
@@ -139,9 +179,10 @@ public sealed class StatusTracker
         if (removed > 0) Rebuild();
     }
 
-    public void Clear()
+    public void Clear(double now)
     {
         if (_active.Count == 0) return;
+        foreach (ActiveStatus status in _active) Note(applied: false, status, now);
         _active.Clear();
         Rebuild();
     }
@@ -151,7 +192,7 @@ public sealed class StatusTracker
     /// NOT run: removing something early is the entire point of removing it, and a
     /// bomb that detonated when cleansed would make cleansing it pointless.
     /// </summary>
-    public int Dispel(bool beneficial, int count)
+    public int Dispel(bool beneficial, int count, double now)
     {
         int removed = 0;
 
@@ -160,6 +201,7 @@ public sealed class StatusTracker
             StatusEffect definition = _active[i].Definition;
             if (!definition.Dispellable || definition.Beneficial != beneficial) continue;
 
+            Note(applied: false, _active[i], now);
             _active.RemoveAt(i);
             removed++;
         }
@@ -172,7 +214,7 @@ public sealed class StatusTracker
     /// Spend shields against incoming damage and return what gets through. Server
     /// side: this mutates.
     /// </summary>
-    public float AbsorbDamage(float amount)
+    public float AbsorbDamage(float amount, double now)
     {
         if (amount <= 0f || AbsorbRemaining <= 0f) return Mathf.Max(0f, amount);
 
@@ -190,7 +232,10 @@ public sealed class StatusTracker
             changed = true;
 
             // A spent shield is gone, not a zero-strength status sitting on the bar.
-            if (status.AbsorbRemaining <= 0.0001f) _active.RemoveAt(i);
+            if (status.AbsorbRemaining > 0.0001f) continue;
+
+            Note(applied: false, status, now);
+            _active.RemoveAt(i);
         }
 
         if (changed) Rebuild();
@@ -227,8 +272,7 @@ public sealed class StatusTracker
             // status it is dropping. Without a removal event a replay would show
             // a buff that ended, and uptime would be a guess from durations that
             // a dispel or a death can cut short.
-            Session.RunRecorder.Instance?.Log.Aura(
-                now, applied: false, null, owner, status.Definition.DisplayName, status.Stacks, 0.0);
+            Note(applied: false, status, now);
 
             if (status.Definition.OnExpire.Count > 0)
                 Run(owner, status, now, status.Definition.OnExpire, status.Definition.ExpireRadius);
