@@ -130,11 +130,11 @@ async function showRun(id) {
       cell: p => `${fmt(p.avoidable_damage)} (${Math.round(100 * p.avoidable_damage / Math.max(p.damage_taken, 1))}%)`,
     }) +
     meter('Resource spent', p => p.resource_spent) +
-    `<h2>Interrupts, dispels and deaths</h2><table>
+    (stats.length ? `<h2>Interrupts, dispels and deaths</h2><table>
       <tr><th>Player</th><th>Interrupts</th><th>Dispels</th><th>Deaths</th><th>Alive</th></tr>` +
       stats.map(p => `<tr><td>${who(p)}</td>
         <td class="n">${p.interrupts}</td><td class="n">${p.dispels}</td>
-        <td class="n">${p.deaths}</td><td class="n">${secs(p.alive_ms)}</td></tr>`).join('') + '</table>' +
+        <td class="n">${p.deaths}</td><td class="n">${secs(p.alive_ms)}</td></tr>`).join('') + '</table>' : '') +
     (abilities.length ? `<h2>By ability</h2><table>
       <tr><th>Player</th><th>Ability</th><th>Damage</th><th>Healing</th><th>Hits</th><th>Casts</th><th>Cost</th></tr>` +
       abilities.map(a => `<tr><td>${esc(named.get(a.combat_id) ?? a.combat_id)}</td><td>${esc(a.ability)}</td>
@@ -147,7 +147,12 @@ async function showRun(id) {
         <input type="range" id="scrub" min="0" max="${data.run.duration_ms}" value="0">
         <span class="muted" id="clock">0:00</span></div>
       <canvas id="stage" width="720" height="720"></canvas>`
-      : '<p class="muted">The replay for this run has expired. Its numbers have not.</p>');
+      // Two different absences, and saying "expired" for both was misleading.
+      // Statistics outlive the blob they came from, so numbers without a log
+      // means the replay was pruned; nothing at all means none ever arrived.
+      : stats.length
+        ? '<p class="muted">The replay for this run has expired. Its numbers have not.</p>'
+        : '<p class="muted">No combat log was uploaded for this run, so there is nothing to show.</p>');
 
   if (data.has_log) replay(id, data.run.duration_ms);
 }

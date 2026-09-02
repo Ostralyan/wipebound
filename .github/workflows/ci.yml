@@ -174,10 +174,16 @@ jobs:
         # database cannot end up as two different schemas.
         run: |
           set -euo pipefail
-          for dir in $(find migrations -mindepth 1 -maxdepth 1 -type d | sort); do
-            echo "::group::$dir"
-            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$dir/up.sql"
-            echo "::endgroup::"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE wipebound_test;'
+
+          # Both databases. The tests write through the real router into their
+          # own, which is what keeps development data free of fixtures.
+          for target in "$DATABASE_URL" "${DATABASE_URL}_test"; do
+            for dir in $(find migrations -mindepth 1 -maxdepth 1 -type d | sort); do
+              echo "::group::${target##*/} <- $dir"
+              psql "$target" -v ON_ERROR_STOP=1 -f "$dir/up.sql"
+              echo "::endgroup::"
+            done
           done
 
       - run: cargo fmt --all -- --check

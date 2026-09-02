@@ -49,8 +49,25 @@ fn unique(tag: &str) -> String {
     format!("{seed:016x}{:016x}", seed.rotate_right(17))
 }
 
+/// The database these tests are allowed to write to.
+///
+/// NOT the one development uses. These write real rows through the real router
+/// -- that is the point of them -- and they were writing into the database the
+/// site reads, so every run took the log viewer further from showing real
+/// fights. Derived from DATABASE_URL rather than configured separately, so
+/// there is no second setting to forget.
+fn test_database_url() -> Option<String> {
+    if let Ok(explicit) = std::env::var("TEST_DATABASE_URL") {
+        return Some(explicit);
+    }
+
+    let configured = std::env::var("DATABASE_URL").ok()?;
+    let (base, name) = configured.rsplit_once('/')?;
+    Some(format!("{base}/{name}_test"))
+}
+
 async fn state() -> Option<AppState> {
-    let database_url = std::env::var("DATABASE_URL").ok()?;
+    let database_url = test_database_url()?;
 
     let config = Config {
         database_url: database_url.clone(),
