@@ -284,10 +284,11 @@ public partial class Boss : Node3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(Combatants.ResolveIncoming(amount, source, this));
+        _health.Drain(Combatants.ResolveIncoming(amount, source, this, label));
 
         if (IsAlive) return;
 
+        Session.RunRecorder.Instance?.Log.Death(Now, this, source, label);
         Session.RunRecorder.Instance?.CompleteAttempt(victory: true);
         _resetAt = Now + ResetSeconds;
         GD.Print($"[boss] {DisplayName} defeated. Resetting in {ResetSeconds}s.");
@@ -296,7 +297,7 @@ public partial class Boss : Node3D, ICombatant
     public void Heal(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive) return;
-        Combatants.ResolveHealing(amount, source, this);
+        Combatants.ResolveHealing(amount, source, this, label);
     }
 
     private void RestartEncounter()

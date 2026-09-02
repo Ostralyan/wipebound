@@ -21,7 +21,14 @@ public partial class DispelEffect : AbilityEffect
     public override void Resolve(EffectContext context)
     {
         foreach (ICombatant target in context.Targets)
+        {
+            int before = target.Status.Active.Count;
             target.Status.Dispel(StripBeneficial, Count);
+
+            Session.RunRecorder.Instance?.Log.Dispel(
+                context.Now, context.Caster, target, context.AbilityName,
+                before - target.Status.Active.Count);
+        }
     }
 
     public override string Describe(EffectContext context)

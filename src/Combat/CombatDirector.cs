@@ -243,6 +243,10 @@ public partial class CombatDirector : Node
 
         // Drawn as a telegraph that is already full and simply persists: a hazard is
         // not counting down to anything, it is dangerous the whole time.
+        Session.RunRecorder.Instance?.Log.Hazard(
+            id, owner, definition.DisplayName, area.ToDictionary(),
+            now, now + definition.Duration, definition.Tint);
+
         Rpc(MethodName.ShowHazard, id, area.ToDictionary(), now, now + definition.Duration, definition.Tint);
     }
 
@@ -381,6 +385,10 @@ public partial class CombatDirector : Node
             ExpiresAt = expiresAt,
         });
 
+        Session.RunRecorder.Instance?.Log.Projectile(
+            id, owner, definition.Id, origin, flat, definition.Speed,
+            definition.Radius, now, expiresAt, definition.Tint);
+
         if (CanBroadcast)
             Rpc(MethodName.ShowProjectile, id, origin, flat, definition.Speed,
                 definition.Radius, now, expiresAt, definition.Tint);
@@ -477,10 +485,17 @@ public partial class CombatDirector : Node
         };
 
         _casts.Add(cast);
+        Session.RunRecorder.Instance?.Log.CastStart(now, caster, ability.DisplayName, ability.CastSeconds);
 
         // castStart and castEnd are ABSOLUTE times on the shared clock, never
         // "starting now". That is what lets a client whose packet arrived late draw
         // an already part-filled telegraph that still finishes on time.
+        // Recorded from the same values, at the same moment, so a replay draws
+        // what the clients were told to draw rather than a second opinion.
+        Session.RunRecorder.Instance?.Log.Telegraph(
+            cast.Id, caster, ability.DisplayName, area.ToDictionary(),
+            now, castEnd, ability.TelegraphColor);
+
         Rpc(MethodName.ShowTelegraph, cast.Id, area.ToDictionary(), ability.DisplayName,
             now, castEnd, ability.TelegraphColor, (int)caster.Team, caster.CombatName,
             ability.DrawsTelegraph);
@@ -557,6 +572,13 @@ public partial class CombatDirector : Node
             bool hit = field <= 0f;
             if (hit) targets.Add(candidate);
 
+            // The verdict, not just the consequence. Recording how far outside
+            // or inside the edge somebody stood is what lets a site say "you
+            // were 1.8m in" instead of "you took damage", and it is the one
+            // thing a log written by a client could never establish.
+            Session.RunRecorder.Instance?.Log.Judged(
+                now, cast.Caster, candidate, ability.DisplayName, field, hit);
+
             GD.Print($"[resolve]   {candidate.CombatName} at {Flat(candidate.CombatPosition)} " +
                      $"field={field:+0.00;-0.00}m -> {(hit ? "HIT" : "safe")}");
         }
@@ -571,6 +593,8 @@ public partial class CombatDirector : Node
             Candidates = candidates,
             Now = now,
         };
+
+        Session.RunRecorder.Instance?.Log.CastResolve(now, cast.Caster, ability.DisplayName, targets.Count);
 
         foreach (AbilityEffect effect in ability.Effects)
         {

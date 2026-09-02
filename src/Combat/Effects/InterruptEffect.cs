@@ -23,6 +23,8 @@ public partial class InterruptEffect : AbilityEffect
             if (CombatDirector.Instance is null || !CombatDirector.Instance.IsCasting(target)) continue;
 
             CombatDirector.Instance.CancelFor(target);
+            Session.RunRecorder.Instance?.Log.Interrupt(
+                context.Now, context.Caster, target, context.AbilityName);
             GD.Print($"[combat] {context.Caster.CombatName} interrupted {target.CombatName}");
 
             StatusEffect lockout = StatusLibrary.Get(LockoutStatusId);

@@ -51,6 +51,7 @@ public static class SelfTest
         BossPacing();
         ClassChoice();
         Identity();
+        CombatLogging();
         MovementUnderBurstyClaims();
         KitShape();
         Controls();
@@ -1317,6 +1318,95 @@ public static class SelfTest
         // have quietly taken every ability, status and hazard name out of it.
         Check(Session.ContentHash.Manifest().Contains("DisplayName=Bulwark"),
               "while an ability's name still is");
+    }
+
+    /// <summary>
+    /// The combat log, which is the raw material for meters and for replay.
+    ///
+    /// Encoding is checked here rather than only by reading a real fight,
+    /// because the properties that matter are cheap to break and invisible when
+    /// they are: a timestamp that stops being relative, an ability table that
+    /// stops being shared, a lane that stops being parallel with the others.
+    /// </summary>
+    private static void CombatLogging()
+    {
+        var alice = new Dummy { CombatId = 11, CombatName = "alice" };
+        var boss = new Dummy { CombatId = -1, CombatName = "boss", Team = Team.Enemies };
+
+        var log = new CombatLog();
+        log.Begin("Wipebringer", 1000.0);
+
+        log.Introduce(1000.0, alice, "hero", "Ember", "id-alice");
+        log.Introduce(1000.0, boss, "boss");
+
+        log.Damage(1002.5, alice, boss, "Lance", 32f, 4f, 0f);
+        log.Damage(1003.0, alice, boss, "Lance", 30f, 0f, 0f);
+        log.Heal(1004.0, alice, alice, "Mend", 20f, 25f);
+        log.Judged(1005.0, boss, alice, "Crater", -1.8f, hit: true);
+        log.Interrupt(1006.0, alice, boss, "Rebuke");
+
+        var document = log.ToDocument("run-1", 1010.0);
+
+        Check((int)document["format"] == CombatLog.FormatVersion, "the document declares its format");
+        Check((int)document["duration_ms"] == 10_000, "duration is measured from the start of the fight");
+
+        var abilities = (Godot.Collections.Array)document["abilities"];
+        Check(abilities.Count == 4, $"each ability is named once, not per event (got {abilities.Count})");
+
+        var events = (Godot.Collections.Array)document["events"];
+        Check(events.Count == 7, $"every call is one row (got {events.Count})");
+
+        var first = (Godot.Collections.Array)events[2];
+        Check((int)first[0] == 2500, "timestamps are milliseconds from the fight, not the wall clock");
+        Check((int)first[1] == (int)LogEventType.Damage, "and carry their type");
+        Check((int)first[2] == 11 && (int)first[3] == -1, "source and target are ids, not names");
+        Check((int)first[5] == 32 && (int)first[6] == 4, "with what landed and what a shield ate");
+
+        // The two Lances must share one entry in the table.
+        var second = (Godot.Collections.Array)events[3];
+        Check((int)first[4] == (int)second[4], "the same ability interns to the same index");
+
+        // Overhealing is kept: it is the difference between healing done and
+        // healing that mattered.
+        var heal = (Godot.Collections.Array)events[4];
+        Check((int)heal[5] == 20 && (int)heal[6] == 25, "healing records what was wasted as well as what landed");
+
+        // The event a client-written log could never produce.
+        var judged = (Godot.Collections.Array)events[5];
+        Check((int)judged[6] == -180, "a judgement records how far inside the edge somebody stood, in cm");
+        Check((int)judged[7] == 1, "and whether it caught them");
+
+        // Tracks stay parallel even for an actor introduced late.
+        var present = new List<ICombatant> { alice, boss };
+        for (int tick = 0; tick < 5; tick++) log.SamplePositions(1010.0 + tick * 0.1, present);
+
+        var tracks = (Godot.Collections.Dictionary)document["tracks"];
+        var refreshed = (Godot.Collections.Dictionary)log.ToDocument("run-1", 1010.5)["tracks"];
+        var lanes = (Godot.Collections.Dictionary)refreshed["lanes"];
+        Check(lanes.Count == 2, "one lane per actor");
+
+        int expected = (int)refreshed["samples"] * CombatLog.LaneStride;
+        foreach (var lane in lanes.Values)
+            Check(((Godot.Collections.Array)lane).Count == expected,
+                  $"every lane has one slot per sample per field (expected {expected})");
+
+        // A dead actor is absent, not at the origin, which in this arena is
+        // where the boss stands.
+        boss.HealthPool.Current = 0f;
+        log.SamplePositions(1011.5, present);
+        var afterDeath = (Godot.Collections.Dictionary)log.ToDocument("run-1", 1011.5)["tracks"];
+        var bossLane = (Godot.Collections.Array)((Godot.Collections.Dictionary)afterDeath["lanes"])["-1"];
+        Check((int)bossLane[bossLane.Count - CombatLog.LaneStride] == CombatLog.NoPosition,
+              "a dead actor has no position rather than one at the centre of the arena");
+
+        // And an unattended server does not grow without limit.
+        var flood = new CombatLog();
+        flood.Begin("Wipebringer", 0.0);
+        for (int i = 0; i < CombatLog.MaxEvents + 50; i++)
+            flood.Damage(0.0, alice, boss, "Lance", 1f, 0f, 0f);
+
+        Check(flood.EventCount == CombatLog.MaxEvents, "events stop at the cap");
+        Check(flood.Truncated, "and the document says it was truncated rather than pretending");
     }
 
     // -- the shape of a kit ----------------------------------------------

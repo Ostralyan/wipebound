@@ -33,6 +33,25 @@ public partial class ApplyStatusEffect : AbilityEffect
             // go off later.
             if (target is null || !target.IsAlive) continue;
             target.Status.Apply(definition, context.Caster, context.Now);
+
+            // Read back, not assumed. A refreshing or stacking status ends up at
+            // a count and an expiry the definition alone does not predict, and a
+            // replay drawing "three stacks" when there is one is worse than
+            // drawing nothing.
+            int stacks = 1;
+            double expires = context.Now + definition.Duration;
+
+            foreach (ActiveStatus live in target.Status.Active)
+            {
+                if (live.Definition.Id != definition.Id) continue;
+                if (live.ExpiresAt < expires && stacks > 1) continue;
+                stacks = live.Stacks;
+                expires = live.ExpiresAt;
+            }
+
+            Session.RunRecorder.Instance?.Log.Aura(
+                context.Now, applied: true, context.Caster, target,
+                definition.DisplayName, stacks, expires - context.Now);
         }
     }
 

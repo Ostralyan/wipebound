@@ -26,6 +26,17 @@ public partial class RunRecorder : Node
     public static RunRecorder Instance { get; private set; }
 
     /// <summary>
+    /// Everything that happened, for a site to render and a replay to play back.
+    ///
+    /// Lives beside the summary rather than inside it: the ladder needs four
+    /// numbers per player and should not wait on a megabyte of events to get
+    /// them. See CombatLog.
+    /// </summary>
+    public CombatLog Log { get; } = new();
+
+    public const string LogDirectory = "user://runs";
+
+    /// <summary>
     /// Bumped by hand when the record's shape changes, so the backend can reject
     /// what it does not understand instead of guessing.
     ///
@@ -55,6 +66,45 @@ public partial class RunRecorder : Node
 
     public override void _Ready() => Instance = this;
 
+    /// <summary>
+    /// Keep the log's cast of characters current, and write down where they are.
+    ///
+    /// Introducing actors here rather than at their spawn sites means nothing has
+    /// to remember to do it: anyone who exists and is being sampled is, by
+    /// definition, already known. The type knowledge lives here because this is
+    /// where a Hero can be told from a Minion.
+    /// </summary>
+    public override void _PhysicsProcess(double delta)
+    {
+        if (!_inProgress || !NetworkManager.Instance.IsServer) return;
+
+        double now = NetClock.Instance.ServerTime;
+        var present = new System.Collections.Generic.List<ICombatant>();
+
+        foreach (Node node in GetTree().GetNodesInGroup(Combatants.GroupName))
+        {
+            if (node is not ICombatant combatant) continue;
+            present.Add(combatant);
+
+            if (Log.Knows(combatant.CombatId)) continue;
+
+            switch (combatant)
+            {
+                case Hero hero:
+                    Log.Introduce(now, hero, "hero", PlayerKit.NameOf(hero.Class), hero.PlayerId);
+                    break;
+                case Boss boss:
+                    Log.Introduce(now, boss, "boss", boss.DisplayName);
+                    break;
+                default:
+                    Log.Introduce(now, combatant, "minion");
+                    break;
+            }
+        }
+
+        Log.SamplePositions(now, present);
+    }
+
     public void BeginAttempt(string bossId)
     {
         if (!NetworkManager.Instance.IsServer || _inProgress) return;
@@ -64,12 +114,14 @@ public partial class RunRecorder : Node
         _runId = NewRunId();
         _startedAt = NetClock.Instance.ServerTime;
         _inProgress = true;
+        Log.Begin(bossId, _startedAt);
     }
 
     public void CompleteAttempt(bool victory)
     {
         if (!NetworkManager.Instance.IsServer || !_inProgress) return;
         _inProgress = false;
+        Log.Finish();
 
         // A wipe leaves dead heroes in the tree; an EMPTY roster means everybody
         // disconnected, so nobody played this attempt and there is nothing to
@@ -83,6 +135,7 @@ public partial class RunRecorder : Node
         }
 
         Godot.Collections.Dictionary record = Build(victory);
+        WriteLog(_runId, NetClock.Instance.ServerTime);
         GD.Print($"[run] {Json.Stringify(record)}");
 
         // RunSubmitter listens here and ships it. Kept as a hook rather than a
@@ -101,6 +154,46 @@ public partial class RunRecorder : Node
 
     /// <summary>Hook for whatever ships the record onward.</summary>
     public System.Action<Godot.Collections.Dictionary> Submitted;
+
+    /// <summary>
+    /// Put the fight on disk, gzipped, beside the summary that will be posted.
+    ///
+    /// Written locally first rather than sent inline with the run. The ladder
+    /// needs four numbers per player and should not wait on a megabyte of
+    /// events to get them, and a log that fails to upload must not take the run
+    /// record down with it -- so this is a file an uploader can carry
+    /// separately, on its own schedule, and retry.
+    ///
+    /// Standard gzip, from .NET, rather than Godot's own compressed container:
+    /// the reader is going to be a website.
+    /// </summary>
+    private void WriteLog(string runId, double endedAt)
+    {
+        try
+        {
+            string directory = ProjectSettings.GlobalizePath(LogDirectory);
+            System.IO.Directory.CreateDirectory(directory);
+
+            byte[] json = System.Text.Encoding.UTF8.GetBytes(
+                Json.Stringify(Log.ToDocument(runId, endedAt)));
+
+            string path = System.IO.Path.Combine(directory, $"{runId}.json.gz");
+
+            using var file = System.IO.File.Create(path);
+            using var gzip = new System.IO.Compression.GZipStream(
+                file, System.IO.Compression.CompressionLevel.Optimal);
+            gzip.Write(json, 0, json.Length);
+
+            GD.Print($"[log] {runId}: {Log.EventCount} events, {json.Length / 1024}KB raw" +
+                     (Log.Truncated ? " (TRUNCATED)" : ""));
+        }
+        catch (System.Exception error)
+        {
+            // A fight that happened is worth more than a file that did not
+            // write. Never let logging take down the run it describes.
+            GD.PushWarning($"[log] could not write {runId}: {error.Message}");
+        }
+    }
 
     /// <summary>Called before a departing hero's node is freed, so it stays in the record.</summary>
     public void CaptureDeparting(Hero hero)

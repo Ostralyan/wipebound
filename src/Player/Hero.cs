@@ -287,13 +287,14 @@ public partial class Hero : CharacterBody3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        _health.Drain(Combatants.ResolveIncoming(amount, source, this));
+        _health.Drain(Combatants.ResolveIncoming(amount, source, this, label));
 
         if (!IsAlive)
         {
             // Death clears everything: a slow that outlived you would apply to the
             // hero that comes back, which is a different fight.
             _status.Clear();
+            Session.RunRecorder.Instance?.Log.Death(Now, this, source, label);
             GD.Print($"[combat] {CombatName} died to {label}");
         }
     }
@@ -301,7 +302,7 @@ public partial class Hero : CharacterBody3D, ICombatant
     public void Heal(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive) return;
-        Combatants.ResolveHealing(amount, source, this);
+        Combatants.ResolveHealing(amount, source, this, label);
     }
 
     /// ICombatant knockback entry point; see ServerPush for why it is a request.

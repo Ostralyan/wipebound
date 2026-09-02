@@ -145,7 +145,7 @@ public static class Combatants
     /// after mitigation, because a shield soaks the damage you were actually going
     /// to take. Both ApplyDamage implementations call this, so neither can drift.
     /// </summary>
-    public static float ResolveIncoming(float amount, ICombatant source, ICombatant target)
+    public static float ResolveIncoming(float amount, ICombatant source, ICombatant target, string ability = "")
     {
         float scaled = ScaleDamage(amount, source, target);
         float landed = target?.Status is null ? scaled : target.Status.AbsorbDamage(scaled);
@@ -161,6 +161,17 @@ public static class Combatants
             target.Contribution.DamageAbsorbed += scaled - landed;
         }
 
+        // Logged here for the same reason attribution is: this is the one place
+        // that knows the final number, so nothing else has to remember to report
+        // and nothing can report a number that was never applied.
+        //
+        // Overkill is computed before the caller drains, which is the only moment
+        // the remaining health is still the health this blow was aimed at.
+        Session.RunRecorder.Instance?.Log.Damage(
+            Net.NetClock.Instance?.ServerTime ?? 0.0, source, target, ability,
+            landed, scaled - landed,
+            Mathf.Max(0f, landed - (target?.HealthPool?.Current ?? 0f)));
+
         return landed;
     }
 
@@ -168,7 +179,7 @@ public static class Combatants
     /// The healing counterpart, so credit works the same way in both directions and
     /// there is somewhere obvious to put healing modifiers later.
     /// </summary>
-    public static float ResolveHealing(float amount, ICombatant source, ICombatant target)
+    public static float ResolveHealing(float amount, ICombatant source, ICombatant target, string ability = "")
     {
         if (amount <= 0f || target?.HealthPool is null) return 0f;
 
@@ -176,6 +187,13 @@ public static class Combatants
         // full-health ally is not a contribution.
         float landed = target.HealthPool.Restore(amount);
         if (source?.Contribution is not null) source.Contribution.HealingDone += landed;
+
+        // Overhealing is recorded rather than discarded. It is the difference
+        // between healing done and healing that mattered, and without it an HPS
+        // number rewards spamming a full-health ally.
+        Session.RunRecorder.Instance?.Log.Heal(
+            Net.NetClock.Instance?.ServerTime ?? 0.0, source, target, ability, landed, amount - landed);
+
         return landed;
     }
 

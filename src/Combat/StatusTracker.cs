@@ -222,8 +222,17 @@ public sealed class StatusTracker
         if (expired is null) return;
 
         foreach (ActiveStatus status in expired)
+        {
+            // Logged here rather than in TakeExpired, which has no idea whose
+            // status it is dropping. Without a removal event a replay would show
+            // a buff that ended, and uptime would be a guess from durations that
+            // a dispel or a death can cut short.
+            Session.RunRecorder.Instance?.Log.Aura(
+                now, applied: false, null, owner, status.Definition.DisplayName, status.Stacks, 0.0);
+
             if (status.Definition.OnExpire.Count > 0)
                 Run(owner, status, now, status.Definition.OnExpire, status.Definition.ExpireRadius);
+        }
 
         Rebuild();
     }

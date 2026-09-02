@@ -205,19 +205,23 @@ public partial class Minion : CharacterBody3D, ICombatant
     {
         if (!IsServer || !IsAlive || amount <= 0f) return;
 
-        float landed = Combatants.ResolveIncoming(amount, source, this);
+        float landed = Combatants.ResolveIncoming(amount, source, this, label);
         _health.Drain(landed);
 
         // Remembered only by this minion, and only for a few seconds.
         if (source is not null) _attention.Record(source.CombatId, landed, Now);
 
-        if (!IsAlive) GD.Print($"[combat] {CombatName} destroyed by {label}");
+        if (!IsAlive)
+        {
+            Session.RunRecorder.Instance?.Log.Death(Now, this, source, label);
+            GD.Print($"[combat] {CombatName} destroyed by {label}");
+        }
     }
 
     public void Heal(float amount, ICombatant source, string label)
     {
         if (!IsServer || !IsAlive) return;
-        Combatants.ResolveHealing(amount, source, this);
+        Combatants.ResolveHealing(amount, source, this, label);
     }
 
     private void UpdateLabel()
