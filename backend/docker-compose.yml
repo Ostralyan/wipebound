@@ -17,7 +17,9 @@ services:
       - "${WIPEBOUND_DB_PORT:-55432}:5432"
     volumes:
       - wipebound-pgdata:/var/lib/postgresql/data
-      - ./migrations/2026-08-31-000000_init/up.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+      # The whole chain, in order, not one hand-picked file. See tools/pg-init.sh.
+      - ./migrations:/migrations:ro
+      - ./tools/pg-init.sh:/docker-entrypoint-initdb.d/001_migrate.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wipebound -d wipebound"]
       interval: 2s

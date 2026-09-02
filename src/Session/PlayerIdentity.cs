@@ -120,9 +120,25 @@ public static class PlayerIdentity
         _id = IsWellFormedId(stored) ? stored : Guid.NewGuid().ToString("N");
         _name = CleanName(UserPrefs.Read(Section, "name", "").AsString());
 
+        if (stored == _id) return;
+
         // Written back immediately when it was minted, so an install that closes
         // before its first run still keeps the same identity next time.
-        if (stored != _id) Save();
+        Save();
+
+        // Then adopt whatever actually landed. Two instances starting together
+        // against a missing file each mint a candidate, and without this they
+        // would keep their own and diverge permanently. Re-reading converges
+        // them on whichever write won.
+        //
+        // A window remains: an instance that re-reads before the other writes
+        // keeps its own id. Closing it properly needs an exclusive create, which
+        // Godot's file API does not offer. The consequence is bounded and worth
+        // stating plainly -- an install can split into two anonymous identities,
+        // only on a simultaneous first launch, and an anonymous identity is
+        // already explicitly not evidence of who anybody is.
+        string landed = UserPrefs.Read(Section, "id", "").AsString();
+        if (IsWellFormedId(landed)) _id = landed;
     }
 
     private static void Save() => UserPrefs.Write(Section, ("id", _id), ("name", _name));

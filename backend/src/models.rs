@@ -26,13 +26,13 @@ pub struct NewRun {
 pub struct NewRunPlayer {
     pub run_id: String,
     pub peer: i64,
-    pub player_id: String,
-    pub display_name: String,
-    pub identity: String,
     pub damage_done: i64,
     pub healing_done: i64,
     pub damage_taken: i64,
     pub overreach_cm: i64,
+    pub player_id: String,
+    pub display_name: String,
+    pub identity: String,
 }
 
 #[derive(Debug, Queryable, Selectable, Serialize)]
@@ -60,11 +60,11 @@ pub struct RunRow {
 pub struct RunPlayerRow {
     pub run_id: String,
     pub peer: i64,
-    pub player_id: String,
-    pub display_name: String,
-    pub identity: String,
     pub damage_done: i64,
     pub healing_done: i64,
     pub damage_taken: i64,
     pub overreach_cm: i64,
+    pub player_id: String,
+    pub display_name: String,
+    pub identity: String,
 }

@@ -25,9 +25,18 @@ public partial class RunRecorder : Node
 {
     public static RunRecorder Instance { get; private set; }
 
+    /// <summary>
     /// Bumped by hand when the record's shape changes, so the backend can reject
     /// what it does not understand instead of guessing.
-    public const int SchemaVersion = 1;
+    ///
+    /// 2 added player_id, display_name and identity to every player line. They
+    /// are required, not optional, so a version 1 record and a version 2 record
+    /// mean genuinely different things -- and leaving the number at 1 would have
+    /// let a mid-deployment mix of old servers and a new backend disagree while
+    /// both insisted they agreed. A rejection naming the version is a far better
+    /// failure than a deserialisation error.
+    /// </summary>
+    public const int SchemaVersion = 2;
 
     /// <summary>
     /// Snapshots of players who left before the attempt ended.

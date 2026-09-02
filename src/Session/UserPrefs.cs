@@ -64,7 +64,11 @@ public static class UserPrefs
     /// </summary>
     private static void Commit(ConfigFile file)
     {
-        string staging = Path + ".tmp";
+        // Named per PROCESS. One shared staging path meant two instances wrote
+        // the same half-finished file and renamed each other's fragments into
+        // place -- a worse failure than the truncation this was added to avoid,
+        // and one introduced by the fix for it.
+        string staging = $"{Path}.{OS.GetProcessId()}.tmp";
         if (file.Save(staging) != Error.Ok) return;
 
         using var dir = DirAccess.Open("user://");

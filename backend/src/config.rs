@@ -55,9 +55,7 @@ impl Config {
                 .ok()
                 .filter(|hash| !hash.trim().is_empty())
                 .unwrap_or_else(|| ranked.first().cloned().unwrap_or_default()),
-            ranked_require_verified_identity: std::env::var("RANKED_REQUIRE_VERIFIED_IDENTITY")
-                .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-                .unwrap_or(false),
+            ranked_require_verified_identity: flag("RANKED_REQUIRE_VERIFIED_IDENTITY", false)?,
             ranked_max_overreach_cm: std::env::var("RANKED_MAX_OVERREACH_CM")
                 .ok()
                 .and_then(|value| value.parse().ok())
@@ -68,4 +66,53 @@ impl Config {
 
 fn required(key: &str) -> Result<String, String> {
     std::env::var(key).map_err(|_| format!("{key} must be set"))
+}
+
+/// A boolean from the environment, or a refusal to start.
+///
+/// Anything unrecognised is an ERROR rather than a default. This one used to
+/// treat every value except "1" and "true" as false, so an operator who wrote
+/// RANKED_REQUIRE_VERIFIED_IDENTITY=treu got the permissive policy and no
+/// indication of it. A security control that silently turns itself off when
+/// misspelled is worse than not having the switch.
+fn flag(key: &str, fallback: bool) -> Result<bool, String> {
+    let Ok(raw) = std::env::var(key) else {
+        return Ok(fallback);
+    };
+
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(format!(
+            "{key} must be true or false, not {other:?} -- refusing to guess at a security setting"
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flag;
+
+    /// Uses its own key names so it cannot collide with a real environment.
+    #[test]
+    fn a_misspelled_flag_refuses_to_start_rather_than_defaulting() {
+        std::env::set_var("WB_TEST_FLAG", "treu");
+        assert!(
+            flag("WB_TEST_FLAG", false).is_err(),
+            "a typo must not be silently false"
+        );
+
+        for yes in ["1", "true", "TRUE", " on ", "yes"] {
+            std::env::set_var("WB_TEST_FLAG", yes);
+            assert_eq!(flag("WB_TEST_FLAG", false), Ok(true), "{yes:?} means true");
+        }
+
+        for no in ["0", "false", "OFF", "no"] {
+            std::env::set_var("WB_TEST_FLAG", no);
+            assert_eq!(flag("WB_TEST_FLAG", true), Ok(false), "{no:?} means false");
+        }
+
+        std::env::remove_var("WB_TEST_FLAG");
+        assert_eq!(flag("WB_TEST_FLAG", true), Ok(true), "unset falls back");
+    }
 }

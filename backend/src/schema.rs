@@ -31,13 +31,17 @@ diesel::table! {
     run_players (run_id, peer) {
         run_id -> Text,
         peer -> Int8,
-        player_id -> Text,
-        display_name -> Text,
-        identity -> Text,
         damage_done -> Int8,
         healing_done -> Int8,
         damage_taken -> Int8,
         overreach_cm -> Int8,
+        // Appended by 2026-09-01-000000_player_identity. Listed last because
+        // that is where ALTER TABLE ADD COLUMN puts them, and Queryable maps
+        // by position: a hand-written schema that disagrees with the database
+        // is a bug waiting for the first query that does not use Selectable.
+        player_id -> Text,
+        display_name -> Text,
+        identity -> Text,
     }
 }
 

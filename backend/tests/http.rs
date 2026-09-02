@@ -49,7 +49,7 @@ fn unique(tag: &str) -> String {
     format!("{seed:016x}{:016x}", seed.rotate_right(17))
 }
 
-fn state() -> Option<AppState> {
+async fn state() -> Option<AppState> {
     let database_url = std::env::var("DATABASE_URL").ok()?;
 
     let config = Config {
@@ -63,7 +63,7 @@ fn state() -> Option<AppState> {
     };
 
     Some(AppState {
-        pool: db::build_pool(&database_url).ok()?,
+        pool: db::build_pool(&database_url).await.ok()?,
         config: Arc::new(config),
     })
 }
@@ -99,7 +99,7 @@ fn run(
     authority: &str,
 ) -> Value {
     json!({
-        "schema": 1,
+        "schema": 2,
         "run_id": id,
         "boss": boss,
         "outcome": outcome,
@@ -125,7 +125,7 @@ fn run(
 /// made and can be seen in the job definition.
 macro_rules! require_db {
     () => {
-        match state() {
+        match state().await {
             Some(value) => value,
             None if std::env::var("WIPEBOUND_SKIP_DB_TESTS").is_ok() => {
                 eprintln!("skipped: WIPEBOUND_SKIP_DB_TESTS is set");

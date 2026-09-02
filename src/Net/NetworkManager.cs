@@ -388,8 +388,10 @@ public partial class NetworkManager : Node
 
     private void OnServerDisconnected()
     {
-        Status("Server closed the session.");
-
+        // The message belongs to ForgetSession, which says it when the session is
+        // actually forgotten. Saying it here as well announced the same
+        // disconnect twice.
+        //
         // Deferred, and pointedly NOT Leave(): we are inside the engine's own
         // disconnect handling, the peer is already gone, and the replicated nodes
         // are already going. All that is left is to forget the session.

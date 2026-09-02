@@ -17,7 +17,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Arc::new(Config::from_env()?);
-    let pool = db::build_pool(&config.database_url)?;
+    let pool = db::build_pool(&config.database_url).await?;
     let state = AppState {
         pool,
         config: Arc::clone(&config),

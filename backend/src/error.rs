@@ -48,8 +48,8 @@ impl From<diesel::result::Error> for AppError {
     }
 }
 
-impl From<diesel_async::pooled_connection::deadpool::PoolError> for AppError {
-    fn from(error: diesel_async::pooled_connection::deadpool::PoolError) -> Self {
+impl From<diesel_async::pooled_connection::bb8::RunError> for AppError {
+    fn from(error: diesel_async::pooled_connection::bb8::RunError) -> Self {
         AppError::Internal(error.to_string())
     }
 }

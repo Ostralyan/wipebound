@@ -7,7 +7,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const SUPPORTED_SCHEMA: i32 = 1;
+/// The record shape this backend understands. 2 requires identity on every
+/// player line; 1 had no such concept, so the two are not interchangeable and a
+/// version 1 submission is refused by name rather than half-understood.
+pub const SUPPORTED_SCHEMA: i32 = 2;
 pub const MAX_PLAYERS: usize = 8;
 
 /// Accepted identity provenances. "steam" is listed before anything produces it
@@ -601,6 +604,13 @@ mod tests {
         let mut wrong_schema = honest();
         wrong_schema.schema = 99;
         assert_eq!(check(&wrong_schema), Err(Rejection::UnsupportedSchema(99)));
+
+        // Specifically the PREVIOUS version, which is the one a rolling
+        // deployment actually produces. A version 1 record has no identity on
+        // its player lines, so accepting it would mean inventing who played.
+        let mut previous = honest();
+        previous.schema = 1;
+        assert_eq!(check(&previous), Err(Rejection::UnsupportedSchema(1)));
 
         let mut bad_id = honest();
         bad_id.run_id = "not-hex".into();
