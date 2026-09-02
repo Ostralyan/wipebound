@@ -26,6 +26,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 sha2 = "0.10"
+
+# Combat logs arrive gzipped, because they are mostly repeated integers and
+# compress about six to one.
+flate2 = "1"
 hex = "0.4"
 dotenvy = "0.15"
 

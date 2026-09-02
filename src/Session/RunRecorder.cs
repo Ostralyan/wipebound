@@ -135,7 +135,9 @@ public partial class RunRecorder : Node
         }
 
         Godot.Collections.Dictionary record = Build(victory);
+
         WriteLog(_runId, NetClock.Instance.ServerTime);
+        (GetTree().Root.GetNodeOrNull("LogUploader") as LogUploader)?.Offer(_runId);
         GD.Print($"[run] {Json.Stringify(record)}");
 
         // RunSubmitter listens here and ships it. Kept as a hook rather than a

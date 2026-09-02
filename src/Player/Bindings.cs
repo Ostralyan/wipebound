@@ -38,6 +38,7 @@ public static class Bindings
     public const string CameraLeft = "camera_left";
     public const string CameraRight = "camera_right";
     public const string CameraRecenter = "camera_recenter";
+    public const string MeterMode = "meter_mode";
 
     private const string SavePath = "user://controls.cfg";
     private const string Section = "bind";
@@ -95,6 +96,10 @@ public static class Bindings
         [CameraLeft] = Physical(Key.Left),
         [CameraRight] = Physical(Key.Right),
         [CameraRecenter] = Physical(Key.Home),
+
+        // Healers need a different meter from everyone else, and nobody wants
+        // two panels.
+        [MeterMode] = Physical(Key.Tab),
     };
 
     // -- install / persist ------------------------------------------------
@@ -292,6 +297,7 @@ public static class Bindings
         actions.Add(CameraLeft);
         actions.Add(CameraRight);
         actions.Add(CameraRecenter);
+        actions.Add(MeterMode);
         return actions.ToArray();
     }
 }

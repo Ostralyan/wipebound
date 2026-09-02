@@ -247,6 +247,86 @@ async fn the_ladder_can_say_who_played() {
 }
 
 #[tokio::test]
+async fn a_combat_log_becomes_numbers_a_site_can_show() {
+    let app = require_db!();
+    let id = unique("logged");
+    let boss = unique("Logged");
+
+    let (status, _) = call(
+        app.clone(),
+        submit(
+            run(&id, &boss, "kill", 30_000, HASH, "dedicated"),
+            Some(TOKEN),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // alice hits twice, is caught 1.8m inside a Crater, and dies.
+    let log = serde_json::json!({
+        "format": 1, "duration_ms": 30000, "truncated": false,
+        "actors": [
+            {"id": 11, "name": "alice", "kind": "hero", "class": "Ember", "player_id": "alice-id"},
+            {"id": -1, "name": "boss", "kind": "boss", "class": "", "player_id": ""}
+        ],
+        "abilities": ["Lance", "Crater"],
+        "events": [
+            [0,    10, 11, 11, -1, 0,  0,    0],
+            [1000, 0,  11, -1, 0,  40, 0,    0],
+            [2000, 0,  11, -1, 0,  60, 0,    0],
+            [3000, 4,  -1, 11, 1,  0,  -180, 1],
+            [3010, 0,  -1, 11, 1,  25, 0,    0],
+            [9000, 9,  -1, 11, 1,  0,  0,    0]
+        ]
+    })
+    .to_string();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/internal/runs/{id}/log"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::from(log))
+        .unwrap();
+
+    let (status, body) = call(app.clone(), request).await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "an uncompressed log is accepted too"
+    );
+    assert_eq!(body["events"], 6);
+
+    let request = Request::builder()
+        .uri(format!("/v1/runs/{id}"))
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, body) = call(app.clone(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["has_log"], true);
+
+    let alice = &body["stats"][0];
+    assert_eq!(alice["display_name"], "alice");
+    assert_eq!(alice["damage_done"], 100);
+    assert_eq!(alice["damage_taken"], 25);
+
+    // The measurement the whole Judged event exists for.
+    assert_eq!(alice["avoidable_damage"], 25);
+
+    // And a per-second figure is divided by time on her feet, not by the fight.
+    assert_eq!(alice["alive_ms"], 9000);
+
+    // The bytes come back as stored, so a replay reads what the server wrote.
+    let request = Request::builder()
+        .uri(format!("/v1/runs/{id}/log"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = call(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn an_identical_retry_returns_the_stored_verdict() {
     let app = require_db!();
     let id = unique("retry");

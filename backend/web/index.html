@@ -1,0 +1,204 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Wipebound logs</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0f14; --panel:#141b23; --line:#243040; --dim:#8aa0b4; --text:#e6edf3; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 ui-sans-serif,system-ui,sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:baseline; }
+  h1 { font-size:16px; margin:0; letter-spacing:.08em; text-transform:uppercase; }
+  main { display:grid; grid-template-columns:300px 1fr; min-height:calc(100vh - 53px); }
+  aside { border-right:1px solid var(--line); overflow:auto; }
+  section { padding:20px; overflow:auto; }
+  .run { padding:10px 16px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .run:hover, .run.on { background:var(--panel); }
+  .run b { display:block; }
+  .muted { color:var(--dim); font-size:12px; }
+  table { border-collapse:collapse; width:100%; margin:8px 0 24px; }
+  th { text-align:left; font-weight:600; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+       color:var(--dim); border-bottom:1px solid var(--line); padding:6px 8px; }
+  td { padding:6px 8px; border-bottom:1px solid #1b2430; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .bar { position:relative; }
+  .bar i { position:absolute; inset:0 auto 0 0; opacity:.28; border-radius:2px; }
+  .bar span { position:relative; }
+  h2 { font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin:24px 0 4px; }
+  canvas { background:#080c11; border:1px solid var(--line); border-radius:6px; display:block; max-width:100%; }
+  .controls { display:flex; gap:10px; align-items:center; margin:10px 0; }
+  button { background:var(--panel); color:var(--text); border:1px solid var(--line);
+           border-radius:5px; padding:5px 12px; cursor:pointer; font:inherit; }
+  input[type=range] { flex:1; }
+  .Warden{color:#38bdf8} .Ember{color:#fb923c} .Verdant{color:#4ade80}
+</style>
+
+<header>
+  <h1>Wipebound</h1>
+  <span class="muted" id="sub">pick a run</span>
+</header>
+
+<main>
+  <aside id="runs"></aside>
+  <section id="detail"><p class="muted">Loading…</p></section>
+</main>
+
+<script>
+const TINT = { Warden:'#38bdf8', Ember:'#fb923c', Verdant:'#4ade80' };
+const SHAPE = { 0:'circle', 1:'cone', 2:'rect', 3:'ring' };
+const ARENA = 46;
+let timer = null;
+
+const fmt = n => Math.round(n).toLocaleString();
+const secs = ms => `${Math.floor(ms/60000)}:${String(Math.floor(ms/1000)%60).padStart(2,'0')}`;
+
+async function boot() {
+  // The ladder is per boss; this page follows whatever the newest runs are on.
+  const runs = await (await fetch('/v1/runs/recent')).json();
+  const list = document.getElementById('runs');
+
+  if (!runs.length) { list.innerHTML = '<p class="muted" style="padding:16px">No runs yet.</p>'; return; }
+
+  list.innerHTML = runs.map(r => `
+    <div class="run" data-id="${r.id}">
+      <b>${r.boss}</b>
+      <span class="muted">${secs(r.duration_ms)} · ${r.outcome}${r.rankable ? ' · ranked' : ''}</span>
+    </div>`).join('');
+
+  list.querySelectorAll('.run').forEach(el => el.onclick = () => {
+    list.querySelectorAll('.run').forEach(o => o.classList.remove('on'));
+    el.classList.add('on');
+    show(el.dataset.id);
+  });
+
+  list.firstElementChild.click();
+}
+
+async function show(id) {
+  if (timer) cancelAnimationFrame(timer);
+  const data = await (await fetch(`/v1/runs/${id}`)).json();
+  document.getElementById('sub').textContent = `${data.run.boss} · ${secs(data.run.duration_ms)} · ${data.run.outcome}`;
+
+  const seconds = Math.max(data.run.duration_ms / 1000, 1);
+  const stats = data.stats || [];
+
+  const meter = (title, pick, extra) => {
+    if (!stats.some(pick)) return '';
+    const ranked = [...stats].sort((a,b) => pick(b) - pick(a));
+    const top = Math.max(pick(ranked[0]), 1);
+    return `<h2>${title}</h2><table><tr><th>Player</th><th>Total</th><th>Per second</th>${extra ? `<th>${extra.label}</th>` : ''}</tr>` +
+      ranked.map(p => `<tr>
+        <td class="bar"><i style="background:${TINT[p.class_name]||'#889'};width:${100*pick(p)/top}%"></i>
+          <span class="${p.class_name}">${p.display_name}</span> <span class="muted">${p.class_name}</span></td>
+        <td class="n">${fmt(pick(p))}</td>
+        <td class="n">${fmt(pick(p)/seconds)}</td>
+        ${extra ? `<td class="n">${extra.cell(p)}</td>` : ''}
+      </tr>`).join('') + '</table>';
+  };
+
+  const abilities = (data.abilities || []).filter(a => a.damage > 0 || a.healing > 0 || a.casts > 0);
+  const byActor = new Map(stats.map(p => [p.combat_id, p.display_name]));
+
+  document.getElementById('detail').innerHTML =
+    meter('Damage done', p => p.damage_done) +
+    meter('Healing done', p => p.healing_done, { label:'Overheal', cell:p => fmt(p.overhealing) }) +
+    meter('Damage taken', p => p.damage_taken,
+          { label:'Avoidable', cell:p => `${fmt(p.avoidable_damage)} (${Math.round(100*p.avoidable_damage/Math.max(p.damage_taken,1))}%)` }) +
+    `<h2>Interrupts, dispels and deaths</h2><table>
+      <tr><th>Player</th><th>Interrupts</th><th>Dispels</th><th>Deaths</th><th>Alive</th></tr>` +
+      stats.map(p => `<tr><td class="${p.class_name}">${p.display_name}</td>
+        <td class="n">${p.interrupts}</td><td class="n">${p.dispels}</td>
+        <td class="n">${p.deaths}</td><td class="n">${secs(p.alive_ms)}</td></tr>`).join('') + '</table>' +
+    (abilities.length ? `<h2>By ability</h2><table>
+      <tr><th>Player</th><th>Ability</th><th>Damage</th><th>Healing</th><th>Hits</th><th>Casts</th></tr>` +
+      abilities.map(a => `<tr><td>${byActor.get(a.combat_id) ?? a.combat_id}</td><td>${a.ability}</td>
+        <td class="n">${fmt(a.damage)}</td><td class="n">${fmt(a.healing)}</td>
+        <td class="n">${a.hits}</td><td class="n">${a.casts}</td></tr>`).join('') + '</table>' : '') +
+    (data.has_log ? `<h2>Replay</h2>
+      <div class="controls"><button id="play">Play</button>
+        <input type="range" id="scrub" min="0" max="${data.run.duration_ms}" value="0">
+        <span class="muted" id="clock">0:00</span></div>
+      <canvas id="stage" width="720" height="720"></canvas>` : '');
+
+  if (data.has_log) replay(id, data.run.duration_ms);
+}
+
+async function replay(id, duration) {
+  // Served with Content-Encoding: gzip, so the browser has already inflated it.
+  const log = await (await fetch(`/v1/runs/${id}/log`)).json();
+  const stage = document.getElementById('stage'), ctx = stage.getContext('2d');
+  const scrub = document.getElementById('scrub'), clock = document.getElementById('clock');
+  const play = document.getElementById('play');
+  const who = Object.fromEntries(log.actors.map(a => [a.id, a]));
+  const stride = log.tracks.stride.length, absent = log.tracks.absent;
+
+  const R = stage.width / 2, K = R / (ARENA * 1.05);
+  const sx = x => R + x * K, sz = z => R + z * K;
+
+  function draw(at) {
+    ctx.clearRect(0, 0, stage.width, stage.height);
+    ctx.strokeStyle = '#1b2430'; ctx.beginPath(); ctx.arc(R, R, ARENA*K, 0, 7); ctx.stroke();
+
+    // What was on the ground: drawn from the geometry the server broadcast, so
+    // this is the footprint the players actually saw.
+    for (const [group, kind] of [[log.hazards,'hazard'], [log.telegraphs,'telegraph']])
+      for (const item of group) {
+        if (at < item.from_ms || at > item.until_ms) continue;
+        const a = item.area, wound = (at - item.from_ms) / Math.max(1, item.until_ms - item.from_ms);
+        ctx.fillStyle = `#${item.colour}`; ctx.globalAlpha = kind === 'hazard' ? .22 : .14 + .3*wound;
+        ctx.beginPath();
+        if (a.shape === 1) {
+          ctx.moveTo(sx(a.cx), sz(a.cz));
+          ctx.arc(sx(a.cx), sz(a.cz), a.radius*K, -a.facing - Math.PI/2 - a.half_angle, -a.facing - Math.PI/2 + a.half_angle);
+        } else {
+          ctx.arc(sx(a.cx), sz(a.cz), a.radius*K, 0, 7);
+        }
+        ctx.fill(); ctx.globalAlpha = 1;
+      }
+
+    // Projectiles are a formula, not samples: the same one the client flew.
+    ctx.fillStyle = '#fb923c';
+    for (const shot of log.projectiles) {
+      if (at < shot.from_ms || at > shot.until_ms) continue;
+      const d = (at - shot.from_ms) / 1000 * shot.speed_cms / 100;
+      ctx.beginPath();
+      ctx.arc(sx(shot.x_cm/100 + shot.dx*d), sz(shot.z_cm/100 + shot.dz*d), Math.max(2, shot.radius_cm/100*K), 0, 7);
+      ctx.fill();
+    }
+
+    const i = Math.min(Math.floor(at / log.tracks.interval_ms), log.tracks.samples - 1);
+    for (const [id, lane] of Object.entries(log.tracks.lanes)) {
+      const base = i * stride;
+      if (base + stride > lane.length || lane[base] === absent) continue;
+      const [x, z, facing, health] = lane.slice(base, base + stride);
+      const actor = who[id] || {};
+      const px = sx(x/100), pz = sz(z/100);
+
+      ctx.fillStyle = actor.kind === 'boss' ? '#f43f5e' : (TINT[actor.class] || '#8aa0b4');
+      ctx.beginPath(); ctx.arc(px, pz, actor.kind === 'boss' ? 9 : 6, 0, 7); ctx.fill();
+
+      // Which way they were looking, which is how you tell a dodge from a stumble.
+      const yaw = -facing/10 * Math.PI/180 - Math.PI/2;
+      ctx.strokeStyle = ctx.fillStyle; ctx.beginPath();
+      ctx.moveTo(px, pz); ctx.lineTo(px + Math.cos(yaw)*12, pz + Math.sin(yaw)*12); ctx.stroke();
+
+      ctx.fillStyle = '#e6edf3'; ctx.font = '11px sans-serif';
+      ctx.fillText(`${actor.name ?? id} ${Math.round(health/10)}%`, px + 10, pz + 3);
+    }
+  }
+
+  let at = 0, running = false, last = 0;
+  const step = now => {
+    if (running) {
+      at = Math.min(at + (now - last), duration);
+      scrub.value = at; clock.textContent = secs(at);
+      if (at >= duration) { running = false; play.textContent = 'Play'; }
+    }
+    last = now; draw(at); timer = requestAnimationFrame(step);
+  };
+
+  scrub.oninput = () => { at = +scrub.value; clock.textContent = secs(at); };
+  play.onclick = () => { running = !running; play.textContent = running ? 'Pause' : 'Play'; };
+  timer = requestAnimationFrame(step);
+}
+
+boot();
+</script>

@@ -50,7 +50,42 @@ public partial class EncounterHud : Control
     private HBoxContainer _buffRow;
 
     private VBoxContainer _meterRows;
-    private readonly List<Label> _meterLabels = new();
+    private readonly List<MeterRow> _meterViews = new();
+
+    /// <summary>
+    /// What the meter is counting.
+    ///
+    /// One panel, cycled, rather than three. A Verdant reading a damage column
+    /// learns nothing about whether it is doing its job, and a raid with three
+    /// meters on screen has no room left for the fight.
+    /// </summary>
+    private enum MeterMode
+    {
+        Damage,
+        Healing,
+        Taken,
+    }
+
+    private MeterMode _meterMode = MeterMode.Damage;
+    private Label _meterHeader;
+
+    /// <summary>
+    /// When this client first saw anybody do anything.
+    ///
+    /// Per-second figures need a start, and the server's is not replicated. It
+    /// is derived here instead: the first frame a total is non-zero is the first
+    /// frame anything happened. Slightly late by one tick, which is invisible
+    /// against a fight measured in minutes, and it needs no new wire traffic.
+    /// </summary>
+    private double _combatStartedAt;
+
+    private sealed class MeterRow
+    {
+        public Control Root;
+        public ColorRect Bar;
+        public Label Name;
+        public Label Value;
+    }
     private Label _netDebug;
 
     private Boss _boss;
@@ -78,6 +113,15 @@ public partial class EncounterHud : Control
         _abilityRow = GetNode<HBoxContainer>("PlayerFrame/Abilities");
 
         _meterRows = GetNode<VBoxContainer>("Meter");
+
+        // Says what is being counted, so a column of numbers is never ambiguous.
+        _meterHeader = new Label
+        {
+            Text = "DAMAGE",
+            MouseFilter = MouseFilterEnum.Ignore,
+            HorizontalAlignment = HorizontalAlignment.Right,
+        };
+        _meterRows.AddChild(_meterHeader);
         _netDebug = GetNode<Label>("NetDebug");
 
         CombatDirector.Instance.CastStarted += OnCastStarted;
@@ -309,43 +353,140 @@ public partial class EncounterHud : Control
     /// recorded at the damage chokepoint and replicate with the rest of a hero's
     /// state -- and it answers "why did we wipe" with something other than opinion.
     /// </summary>
+    /// <summary>
+    /// Who is doing the work, and how much of it.
+    ///
+    /// Bars are proportional to the LEADER rather than to a fixed scale, which
+    /// is the only version that stays readable: absolute numbers vary by an
+    /// order of magnitude between the opening and the last phase, and a bar
+    /// scaled to a guess is empty for most of a fight.
+    /// </summary>
     private void UpdateMeter()
     {
         var heroes = new List<Hero>();
         foreach (Node node in GetTree().GetNodesInGroup(Hero.GroupName))
             if (node is Hero hero) heroes.Add(hero);
 
-        heroes.Sort((a, b) => b.DamageDone.CompareTo(a.DamageDone));
+        heroes.Sort((a, b) => Amount(b).CompareTo(Amount(a)));
+
+        double now = NetClock.Instance.ServerTime;
+        float total = 0f;
+        foreach (Hero hero in heroes) total += Amount(hero);
+
+        if (_combatStartedAt <= 0.0 && total > 0f) _combatStartedAt = now;
+        double elapsed = _combatStartedAt > 0.0 ? Mathf.Max(now - _combatStartedAt, 0.001) : 0.0;
+
+        float leader = heroes.Count > 0 ? Mathf.Max(Amount(heroes[0]), 1f) : 1f;
+        float width = Mathf.Max(_meterRows.Size.X, 120f);
 
         for (int i = 0; i < heroes.Count; i++)
         {
-            Label label = i < _meterLabels.Count ? _meterLabels[i] : NewMeterLabel();
+            MeterRow row = i < _meterViews.Count ? _meterViews[i] : NewMeterRow();
             Hero hero = heroes[i];
+            float amount = Amount(hero);
 
-            string healing = hero.HealingDone > 0f ? $"  +{Mathf.RoundToInt(hero.HealingDone)}" : "";
-            label.Text = $"{hero.PeerId}   {Mathf.RoundToInt(hero.DamageDone)}{healing}";
-            label.Modulate = hero.IsLocalPlayer ? new Color("4ade80") : new Color(1f, 1f, 1f, 0.75f);
-            label.Visible = true;
+            row.Name.Text = $"{hero.CombatName}  {PlayerKit.NameOf(hero.Class)}";
+
+            row.Value.Text = elapsed > 0.0
+                ? $"{Mathf.RoundToInt(amount):N0}   {Mathf.RoundToInt(amount / (float)elapsed):N0}/s"
+                : $"{Mathf.RoundToInt(amount):N0}";
+
+            row.Bar.Color = ClassTint(hero.Class, hero.IsLocalPlayer);
+            row.Bar.Size = new Vector2(width * (amount / leader), MeterRowHeight - 2f);
+            row.Root.Visible = true;
         }
 
-        for (int i = heroes.Count; i < _meterLabels.Count; i++)
-            _meterLabels[i].Visible = false;
+        for (int i = heroes.Count; i < _meterViews.Count; i++)
+            _meterViews[i].Root.Visible = false;
+
+        _meterHeader.Text = elapsed > 0.0
+            ? $"{Header()}   {(int)elapsed / 60:0}:{(int)elapsed % 60:00}"
+            : Header();
     }
 
-    private Label NewMeterLabel()
+    private float Amount(Hero hero) => _meterMode switch
     {
-        var label = new Label
+        MeterMode.Healing => hero.HealingDone,
+        MeterMode.Taken => hero.DamageTaken,
+        _ => hero.DamageDone,
+    };
+
+    private string Header() => _meterMode switch
+    {
+        MeterMode.Healing => "HEALING",
+        MeterMode.Taken => "DAMAGE TAKEN",
+        _ => "DAMAGE",
+    };
+
+    /// The class palette, so a row is recognisable before it is read. The local
+    /// player is brighter, because the first thing anybody looks for is
+    /// themselves.
+    private static Color ClassTint(HeroClass hero, bool mine)
+    {
+        Color tint = hero switch
+        {
+            HeroClass.Warden => new Color("38bdf8"),
+            HeroClass.Ember => new Color("fb923c"),
+            _ => new Color("4ade80"),
+        };
+
+        tint.A = mine ? 0.85f : 0.45f;
+        return tint;
+    }
+
+    private const float MeterRowHeight = 20f;
+
+    private MeterRow NewMeterRow()
+    {
+        var root = new Control
+        {
+            CustomMinimumSize = new Vector2(0f, MeterRowHeight),
+            MouseFilter = MouseFilterEnum.Ignore,
+        };
+
+        // Behind the text, sized every frame. A ColorRect rather than a
+        // ProgressBar because the bar is the only thing being styled and a
+        // theme override for one rectangle is more machinery than a rectangle.
+        var bar = new ColorRect { MouseFilter = MouseFilterEnum.Ignore };
+
+        var name = new Label
         {
             MouseFilter = MouseFilterEnum.Ignore,
+            AnchorRight = 1f,
+            HorizontalAlignment = HorizontalAlignment.Left,
+        };
+
+        var value = new Label
+        {
+            MouseFilter = MouseFilterEnum.Ignore,
+            AnchorRight = 1f,
             HorizontalAlignment = HorizontalAlignment.Right,
         };
 
-        _meterRows.AddChild(label);
-        _meterLabels.Add(label);
-        return label;
+        root.AddChild(bar);
+        root.AddChild(name);
+        root.AddChild(value);
+        _meterRows.AddChild(root);
+
+        var row = new MeterRow { Root = root, Bar = bar, Name = name, Value = value };
+        _meterViews.Add(row);
+        return row;
     }
 
-    // -- diagnostics -----------------------------------------------------
+    /// <summary>Cycle what the meter counts. Bound, like everything else.</summary>
+    public override void _UnhandledInput(InputEvent @event)
+    {
+        if (!@event.IsActionPressed(Player.Bindings.MeterMode)) return;
+
+        _meterMode = _meterMode switch
+        {
+            MeterMode.Damage => MeterMode.Healing,
+            MeterMode.Healing => MeterMode.Taken,
+            _ => MeterMode.Damage,
+        };
+
+        GetViewport().SetInputAsHandled();
+    }
 
     private void UpdateNetDebug()
     {

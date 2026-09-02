@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use crate::{
     domain::{self, RunSubmission},
     error::AppError,
-    models::{NewRun, NewRunPlayer, RunPlayerRow, RunRow},
-    schema::{run_players, runs},
+    models::{AbilityStatRow, NewRun, NewRunPlayer, PlayerStatRow, RunPlayerRow, RunRow},
+    schema::{run_ability_stats, run_logs, run_player_stats, run_players, runs},
     AppState,
 };
 
@@ -176,6 +176,23 @@ pub async fn submit(
 }
 
 /// GET /v1/runs/{id}
+/// GET /v1/runs/recent -- the newest attempts, ranked or not.
+///
+/// A ladder shows the best; this shows the latest, which is what somebody who
+/// just finished a fight is looking for.
+pub async fn recent(State(state): State<AppState>) -> Result<Json<Vec<RunRow>>, AppError> {
+    let mut conn = state.pool.get().await?;
+
+    let rows = runs::table
+        .select(RunRow::as_select())
+        .order(runs::created_at.desc())
+        .limit(50)
+        .load(&mut conn)
+        .await?;
+
+    Ok(Json(rows))
+}
+
 pub async fn detail(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -197,5 +214,34 @@ pub async fn detail(
         .load(&mut conn)
         .await?;
 
-    Ok(Json(json!({ "run": run, "players": players })))
+    // Derived at upload, so a page showing meters is three indexed reads rather
+    // than a gzip inflate and a fold over ten thousand events.
+    let stats = run_player_stats::table
+        .filter(run_player_stats::run_id.eq(&id))
+        .select(PlayerStatRow::as_select())
+        .order(run_player_stats::damage_done.desc())
+        .load(&mut conn)
+        .await?;
+
+    let abilities = run_ability_stats::table
+        .filter(run_ability_stats::run_id.eq(&id))
+        .select(AbilityStatRow::as_select())
+        .order(run_ability_stats::damage.desc())
+        .load(&mut conn)
+        .await?;
+
+    // Whether there is a fight to replay, without shipping it in this response.
+    let has_log: i64 = run_logs::table
+        .filter(run_logs::run_id.eq(&id))
+        .count()
+        .get_result(&mut conn)
+        .await?;
+
+    Ok(Json(json!({
+        "run": run,
+        "players": players,
+        "stats": stats,
+        "abilities": abilities,
+        "has_log": has_log > 0,
+    })))
 }

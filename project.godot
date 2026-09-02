@@ -23,6 +23,7 @@ CombatDirector="*res://src/Combat/CombatDirector.cs"
 CommandRouter="*res://src/Combat/Commands/CommandRouter.cs"
 RunRecorder="*res://src/Session/RunRecorder.cs"
 RunSubmitter="*res://src/Session/RunSubmitter.cs"
+LogUploader="*res://src/Session/LogUploader.cs"
 
 [display]
 

@@ -45,5 +45,59 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    run_logs (run_id) {
+        run_id -> Text,
+        format -> Int4,
+        body -> Bytea,
+        byte_size -> Int8,
+        events -> Int4,
+        truncated -> Bool,
+        created_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
+    run_player_stats (run_id, combat_id) {
+        run_id -> Text,
+        combat_id -> Int8,
+        player_id -> Text,
+        display_name -> Text,
+        class_name -> Text,
+        damage_done -> Int8,
+        healing_done -> Int8,
+        overhealing -> Int8,
+        damage_taken -> Int8,
+        damage_absorbed -> Int8,
+        avoidable_damage -> Int8,
+        interrupts -> Int4,
+        dispels -> Int4,
+        deaths -> Int4,
+        alive_ms -> Int8,
+    }
+}
+
+diesel::table! {
+    run_ability_stats (run_id, combat_id, ability) {
+        run_id -> Text,
+        combat_id -> Int8,
+        ability -> Text,
+        damage -> Int8,
+        healing -> Int8,
+        hits -> Int4,
+        casts -> Int4,
+    }
+}
+
 diesel::joinable!(run_players -> runs (run_id));
-diesel::allow_tables_to_appear_in_same_query!(game_servers, runs, run_players);
+diesel::joinable!(run_logs -> runs (run_id));
+diesel::joinable!(run_player_stats -> runs (run_id));
+diesel::joinable!(run_ability_stats -> runs (run_id));
+diesel::allow_tables_to_appear_in_same_query!(
+    game_servers,
+    runs,
+    run_players,
+    run_logs,
+    run_player_stats,
+    run_ability_stats
+);
